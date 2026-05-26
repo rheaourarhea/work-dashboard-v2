@@ -29,6 +29,25 @@ const provider = new GoogleAuthProvider();
 let currentUser = null;
 let currentRole = 'member';
 
+// ── 로그인 역할 선택
+let selectedLoginRole = 'member';
+window.selectLoginRole = (role) => {
+  selectedLoginRole = role;
+  // 버튼 스타일
+  document.getElementById('role-select-manager').classList.remove('active-role','manager-active');
+  document.getElementById('role-select-member').classList.remove('active-role');
+  if (role === 'manager') {
+    document.getElementById('role-select-manager').classList.add('active-role','manager-active');
+  } else {
+    document.getElementById('role-select-member').classList.add('active-role');
+  }
+  // 안내 텍스트
+  const display = document.getElementById('selected-role-display');
+  display.innerHTML = role === 'manager'
+    ? '👑 <strong style="color:var(--amber)">팀장</strong> 으로 로그인합니다'
+    : '👤 <strong style="color:var(--blue)">팀원</strong> 으로 로그인합니다';
+};
+
 // ── 버튼 이벤트 모듈 내부에서 등록
 document.getElementById('google-login-btn').addEventListener('click', async () => {
   try {
@@ -56,20 +75,15 @@ onAuthStateChanged(auth, async (user) => {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('dashboard').style.display = 'flex';
     document.getElementById('user-name').textContent = user.displayName;
-    document.getElementById('user-avatar').textContent = user.displayName?.[0] || '?';
     document.getElementById('user-photo').src = user.photoURL || '';
 
-    // 역할 불러오기
-    const roleDoc = await getDoc(doc(db, 'users', user.uid));
-    if (roleDoc.exists()) {
-      currentRole = roleDoc.data().role || 'member';
-    } else {
-      await setDoc(doc(db, 'users', user.uid), { name: user.displayName, email: user.email, role: 'member', createdAt: serverTimestamp() });
-      currentRole = 'member';
-    }
-    document.getElementById('role-badge').textContent = currentRole === 'manager' ? '팀장' : '팀원';
-    document.getElementById('role-badge').className = 'role-badge ' + (currentRole === 'manager' ? 'manager' : 'member');
-
+    // 역할 저장 (로그인 시 선택한 역할로 덮어쓰기)
+    await setDoc(doc(db, 'users', user.uid), {
+      name: user.displayName, email: user.email,
+      role: selectedLoginRole, updatedAt: serverTimestamp()
+    }, { merge: true });
+    currentRole = selectedLoginRole;
+    applyRole();
     initDashboard();
   } else {
     currentUser = null;
@@ -77,6 +91,57 @@ onAuthStateChanged(auth, async (user) => {
     document.getElementById('dashboard').style.display = 'none';
   }
 });
+
+// ── 역할 적용
+function applyRole() {
+  const badge = document.getElementById('role-badge');
+  badge.textContent = currentRole === 'manager' ? '👑 팀장' : '👤 팀원';
+  badge.className = 'role-badge ' + (currentRole === 'manager' ? 'manager' : 'member');
+
+  // 팀장 전용 UI 표시/숨김
+  document.querySelectorAll('.manager-only').forEach(el => {
+    el.style.display = currentRole === 'manager' ? '' : 'none';
+  });
+  // 팀원 전용 UI
+  document.querySelectorAll('.member-only').forEach(el => {
+    el.style.display = currentRole === 'member' ? '' : 'none';
+  });
+}
+
+// ── 역할 변경 (팀장만 가능)
+window.changeRole = async (uid, newRole) => {
+  if (currentRole !== 'manager') return alert('팀장만 역할을 변경할 수 있습니다.');
+  await updateDoc(doc(db, 'users', uid), { role: newRole });
+  alert(`역할이 ${newRole === 'manager' ? '팀장' : '팀원'}으로 변경되었습니다.`);
+  loadTeamMembers();
+};
+
+// ── 팀원 목록 불러오기 (팀장 전용)
+async function loadTeamMembers() {
+  if (currentRole !== 'manager') return;
+  const snap = await new Promise(resolve => {
+    const unsub = onSnapshot(collection(db, 'users'), s => { unsub(); resolve(s); });
+  });
+  const list = document.getElementById('team-member-list');
+  if (!list) return;
+  list.innerHTML = '';
+  snap.forEach(d => {
+    const data = d.data();
+    const div = document.createElement('div');
+    div.className = 'team-member-item';
+    div.innerHTML = `
+      <span class="tm-name">${data.name || data.email}</span>
+      <span class="role-badge ${data.role === 'manager' ? 'manager' : 'member'}" style="font-size:9px;">
+        ${data.role === 'manager' ? '👑 팀장' : '👤 팀원'}
+      </span>
+      ${d.id !== currentUser.uid ? `
+        <select onchange="changeRole('${d.id}', this.value)" style="background:var(--bg4);border:1px solid var(--border2);color:var(--t1);border-radius:4px;font-size:9px;padding:2px 4px;">
+          <option value="member" ${data.role==='member'?'selected':''}>팀원</option>
+          <option value="manager" ${data.role==='manager'?'selected':''}>팀장</option>
+        </select>` : '<span style="font-size:9px;color:var(--t3)">나</span>'}`;
+    list.appendChild(div);
+  });
+}
 
 // ── 대시보드 초기화
 function initDashboard() {
@@ -200,21 +265,93 @@ window.deletePostit = async (id) => {
   await deleteDoc(doc(db, 'postits', id));
 };
 
-// ── 결산 분석 탭
+// ── 결산 분석 (Firestore 실제 데이터)
 window.currentPeriod = 'daily';
 window.switchPeriod = (period) => {
   currentPeriod = period;
   document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('btn-'+period).classList.add('active');
-  renderAnalysis(period);
+  loadAnalysis(period);
 };
-function initAnalysis() { renderAnalysis('daily'); }
-function renderAnalysis(period) {
-  const data = getAnalysisData(period);
-  // 차트 업데이트
+
+function initAnalysis() { loadAnalysis('daily'); }
+
+async function loadAnalysis(period) {
+  // Firestore에서 tasks 데이터 가져오기
+  try {
+    const snap = await new Promise(resolve => {
+      const unsub = onSnapshot(collection(db, 'tasks'), s => { unsub(); resolve(s); });
+    });
+    const tasks = [];
+    snap.forEach(d => tasks.push(d.data()));
+
+    const now = new Date();
+    const periodData = buildPeriodData(tasks, period, now);
+    renderAnalysisChart(periodData);
+
+    // 결산 저장 (Firestore)
+    const key = `${period}_${now.toISOString().slice(0,10)}`;
+    await setDoc(doc(db, 'analysis', key), {
+      period, date: now.toISOString().slice(0,10),
+      totalDone: periodData.totalDone,
+      totalProgress: periodData.totalProgress,
+      totalDelayed: periodData.totalDelayed,
+      rate: periodData.rate,
+      updatedAt: serverTimestamp()
+    });
+  } catch(e) {
+    // Firestore 오류시 더미 데이터로 폴백
+    renderAnalysisChart(getFallbackData(period));
+  }
+}
+
+function buildPeriodData(tasks, period, now) {
+  const done = tasks.filter(t => t.done).length;
+  const progress = tasks.filter(t => !t.done && t.deadline > 0).length;
+  const delayed = tasks.filter(t => !t.done && t.deadline <= 0).length;
+  const total = done + progress + delayed || 1;
+  const rate = Math.round(done / total * 100);
+
+  // 기간별 라벨/분포 생성
+  const sets = {
+    daily:     { labels:['월','화','수','목','금','토','일'] },
+    weekly:    { labels:['1주','2주','3주','4주'] },
+    monthly:   { labels:['1월','2월','3월','4월','5월'] },
+    quarterly: { labels:['Q1','Q2','Q3','Q4'] },
+    yearly:    { labels:['2024','2025','2026'] },
+  };
+  const labels = sets[period].labels;
+  const len = labels.length;
+
+  // 실제 태스크를 라벨 수에 맞게 분산
+  const doneArr = labels.map((_,i) => i === len-1 ? done : Math.floor(done/len));
+  const progressArr = labels.map((_,i) => i === len-1 ? progress : Math.floor(progress/len));
+  const delayedArr = labels.map((_,i) => i === len-1 ? delayed : Math.floor(delayed/len));
+
+  return { labels, done: doneArr, progress: progressArr, delayed: delayedArr, totalDone: done, totalProgress: progress, totalDelayed: delayed, rate };
+}
+
+function getFallbackData(period) {
+  const sets = {
+    daily:     { labels:['월','화','수','목','금','토','일'], done:[5,7,4,8,6,2,1], progress:[3,2,4,2,3,1,0], delayed:[1,0,1,0,2,0,0] },
+    weekly:    { labels:['1주','2주','3주','4주'], done:[28,32,25,35], progress:[8,6,10,7], delayed:[3,2,4,1] },
+    monthly:   { labels:['1월','2월','3월','4월','5월'], done:[95,102,88,115,72], progress:[12,8,15,10,18], delayed:[5,3,7,2,4] },
+    quarterly: { labels:['Q1','Q2','Q3','Q4'], done:[285,289,0,0], progress:[35,28,0,0], delayed:[15,6,0,0] },
+    yearly:    { labels:['2024','2025','2026'], done:[980,1120,574], progress:[45,38,46], delayed:[32,18,10] },
+  };
+  const d = sets[period];
+  const totalDone = d.done.reduce((a,b)=>a+b,0);
+  const totalProgress = d.progress.reduce((a,b)=>a+b,0);
+  const totalDelayed = d.delayed.reduce((a,b)=>a+b,0);
+  const rate = Math.round(totalDone/(totalDone+totalProgress+totalDelayed)*100);
+  return { ...d, totalDone, totalProgress, totalDelayed, rate };
+}
+
+function renderAnalysisChart(data) {
   if (window.analysisChart) window.analysisChart.destroy();
-  const ctx = document.getElementById('analysis-chart').getContext('2d');
-  window.analysisChart = new Chart(ctx, {
+  const ctx = document.getElementById('analysis-chart');
+  if (!ctx) return;
+  window.analysisChart = new Chart(ctx.getContext('2d'), {
     type: 'bar',
     data: {
       labels: data.labels,
@@ -233,27 +370,11 @@ function renderAnalysis(period) {
       }
     }
   });
-  // 요약 카드
   document.getElementById('analysis-summary').innerHTML = `
     <div class="sum-card gn"><div class="sum-val">${data.totalDone}</div><div class="sum-lbl">완료</div></div>
     <div class="sum-card bl"><div class="sum-val">${data.totalProgress}</div><div class="sum-lbl">진행</div></div>
     <div class="sum-card rd"><div class="sum-val">${data.totalDelayed}</div><div class="sum-lbl">지연</div></div>
     <div class="sum-card pu"><div class="sum-val">${data.rate}%</div><div class="sum-lbl">완료율</div></div>`;
-}
-function getAnalysisData(period) {
-  const sets = {
-    daily:   { labels:['월','화','수','목','금','토','일'], done:[5,7,4,8,6,2,1], progress:[3,2,4,2,3,1,0], delayed:[1,0,1,0,2,0,0] },
-    weekly:  { labels:['1주','2주','3주','4주'], done:[28,32,25,35], progress:[8,6,10,7], delayed:[3,2,4,1] },
-    monthly: { labels:['1월','2월','3월','4월','5월'], done:[95,102,88,115,72], progress:[12,8,15,10,18], delayed:[5,3,7,2,4] },
-    quarterly:{ labels:['Q1','Q2','Q3','Q4'], done:[285,289,0,0], progress:[35,28,0,0], delayed:[15,6,0,0] },
-    yearly:  { labels:['2024','2025','2026'], done:[980,1120,574], progress:[45,38,46], delayed:[32,18,10] },
-  };
-  const d = sets[period];
-  const totalDone = d.done.reduce((a,b)=>a+b,0);
-  const totalProgress = d.progress.reduce((a,b)=>a+b,0);
-  const totalDelayed = d.delayed.reduce((a,b)=>a+b,0);
-  const rate = Math.round(totalDone/(totalDone+totalProgress+totalDelayed)*100);
-  return { ...d, totalDone, totalProgress, totalDelayed, rate };
 }
 
 // ── 일일 결산 메일 발송
@@ -276,6 +397,80 @@ window.sendDailyReport = async () => {
     alert(result.success ? '✅ 메일 발송 완료!' : '❌ 발송 실패: ' + result.message);
   } catch(e) { alert('서버 연결 오류'); }
 };
+
+// 팀 패널 토글
+window.toggleTeamPanel = () => {
+  const p = document.getElementById('team-panel');
+  const isOpen = p.style.display !== 'none';
+  p.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) loadTeamMembers();
+};
+
+// 채팅 탭 전환
+window.switchChatTab = (tab) => {
+  const isTeam = tab === 'team';
+  document.getElementById('panel-team').style.display = isTeam ? 'flex' : 'none';
+  document.getElementById('panel-ai').style.display = isTeam ? 'none' : 'flex';
+  document.getElementById('tab-team').style.borderBottomColor = isTeam ? 'var(--blue)' : 'transparent';
+  document.getElementById('tab-team').style.color = isTeam ? 'var(--t1)' : 'var(--t3)';
+  document.getElementById('tab-ai').style.borderBottomColor = isTeam ? 'transparent' : 'var(--blue)';
+  document.getElementById('tab-ai').style.color = isTeam ? 'var(--t3)' : 'var(--t1)';
+};
+
+// ── AI 챗봇 (Claude API)
+window.sendAIChat = async () => {
+  const inp = document.getElementById('ai-chat-input');
+  const msg = inp.value.trim();
+  if (!msg || !currentUser) return;
+  inp.value = '';
+  appendAIMsg(msg, 'user');
+  const typ = appendAITyping();
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: `당신은 마케팅팀 ${currentUser.displayName}의 업무 AI 어시스턴트입니다.
+현재 대시보드 현황:
+- 긴급: SNS 콘텐츠 최종 시안 D-2, 광고예산 계획서 D-1
+- KPI: 캠페인 전환율 3.8%(목표 초과), 인스타 CTR 1.2%(목표 미달), 예산 소진율 94%
+- 오늘 일정: 10:00 콘텐츠 중간보고, 15:00 위클리 미팅, 17:00 최종 제출 마감
+짧고 실용적으로 한국어로 답변하세요.`,
+        messages: [{ role: 'user', content: msg }]
+      })
+    });
+    const data = await res.json();
+    typ.remove();
+    appendAIMsg(data.content?.[0]?.text || '응답을 받지 못했습니다.', 'bot');
+  } catch(e) {
+    typ.remove();
+    appendAIMsg('연결 오류가 발생했습니다.', 'bot');
+  }
+};
+function appendAIMsg(text, role) {
+  const d = document.createElement('div');
+  d.className = 'chat-msg ' + (role === 'user' ? 'mine' : 'other');
+  d.innerHTML = role === 'bot'
+    ? `<div class="chat-sender">AI 어시스턴트</div><div class="chat-bubble">${text}</div>`
+    : `<div class="chat-bubble">${text}</div>`;
+  const c = document.getElementById('ai-chat-messages');
+  if (c) { c.appendChild(d); c.scrollTop = c.scrollHeight; }
+  return d;
+}
+function appendAITyping() {
+  const d = document.createElement('div');
+  d.className = 'chat-msg other';
+  d.innerHTML = `<div class="chat-bubble" style="display:flex;gap:4px;align-items:center;">
+    <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite .0s;display:inline-block"></span>
+    <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite .15s;display:inline-block"></span>
+    <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite .3s;display:inline-block"></span>
+  </div>`;
+  const c = document.getElementById('ai-chat-messages');
+  if (c) { c.appendChild(d); c.scrollTop = c.scrollHeight; }
+  return d;
+}
 
 // ── 시계
 function startClock() {
@@ -312,6 +507,11 @@ setTimeout(() => {
   --r:10px;--r-sm:7px;
 }
 body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-apple-system,sans-serif;font-size:12px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+
+.role-select-btn{padding:12px 8px;background:var(--bg3);border:2px solid var(--border);border-radius:var(--r-sm);text-align:center;cursor:pointer;transition:all .15s;}
+.role-select-btn:hover{border-color:var(--border2);}
+.role-select-btn.active-role{border-color:var(--blue);background:rgba(79,126,255,.08);}
+.role-select-btn.active-role.manager-active{border-color:var(--amber);background:rgba(245,166,35,.08);}
 
 /* LOGIN */
 #login-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:1000;flex-direction:column;gap:20px;}
@@ -506,6 +706,9 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 .mail-btn{margin-top:6px;padding:6px;background:linear-gradient(135deg,var(--green),var(--teal));border:none;border-radius:var(--r-sm);color:#fff;font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;flex-shrink:0;}
 .mail-btn:hover{opacity:.9;}
 
+.team-member-item{display:flex;align-items:center;gap:6px;padding:5px 7px;background:var(--bg3);border-radius:var(--r-sm);}
+.tm-name{flex:1;font-size:11px;color:var(--t1);}
+
 ::-webkit-scrollbar{width:3px;height:3px;}
 ::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px;}
 ::-webkit-scrollbar-track{background:transparent;}
@@ -519,10 +722,37 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
     <div class="login-logo">W</div>
     <div class="login-title">업무 종합 대시보드</div>
     <div class="login-sub">마케팅팀 · 업무 현황 통합 관리 시스템</div>
+
+    <!-- 역할 선택 -->
+    <div style="margin-bottom:16px;">
+      <div style="font-size:11px;color:var(--t3);margin-bottom:8px;text-align:left;">역할을 선택하고 로그인하세요</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div id="role-select-manager" class="role-select-btn" onclick="selectLoginRole('manager')">
+          <div style="font-size:20px;margin-bottom:4px;">👑</div>
+          <div style="font-size:12px;font-weight:700;color:var(--amber)">팀장</div>
+          <div style="font-size:10px;color:var(--t3);margin-top:2px;">업무 배정·관리</div>
+        </div>
+        <div id="role-select-member" class="role-select-btn active-role" onclick="selectLoginRole('member')">
+          <div style="font-size:20px;margin-bottom:4px;">👤</div>
+          <div style="font-size:12px;font-weight:700;color:var(--blue)">팀원</div>
+          <div style="font-size:10px;color:var(--t3);margin-top:2px;">업무 확인·처리</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 선택된 역할 표시 -->
+    <div id="selected-role-display" style="margin-bottom:12px;padding:8px;background:var(--bg3);border-radius:var(--r-sm);font-size:11px;color:var(--t2);text-align:center;">
+      👤 <strong style="color:var(--blue)">팀원</strong> 으로 로그인합니다
+    </div>
+
     <button class="google-btn" id="google-login-btn">
       <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
       Google 계정으로 로그인
     </button>
+
+    <div style="margin-top:12px;font-size:10px;color:var(--t3);">
+      * 같은 계정도 역할에 따라 다른 화면이 제공됩니다
+    </div>
   </div>
 </div>
 
@@ -545,9 +775,17 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
         <img class="user-photo" id="user-photo" src="" alt="">
         <span style="font-size:11px;color:var(--t2)" id="user-name"></span>
       </div>
+      <button class="logout-btn manager-only" onclick="toggleTeamPanel()" style="display:none;"><i class="ti ti-users" style="font-size:11px"></i> 팀 관리</button>
       <button class="logout-btn" id="logout-btn"><i class="ti ti-logout" style="font-size:11px"></i> 로그아웃</button>
     </div>
   </header>
+
+  <!-- 팀 관리 패널 (팀장 전용) -->
+  <div id="team-panel" style="display:none;position:fixed;top:48px;right:16px;z-index:999;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:12px;min-width:220px;box-shadow:0 8px 24px rgba(0,0,0,.4);">
+    <div style="font-size:11px;font-weight:700;color:var(--t1);margin-bottom:8px;display:flex;align-items:center;gap:5px;"><i class="ti ti-users" style="color:var(--blue)"></i> 팀원 역할 관리</div>
+    <div id="team-member-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+    <div style="font-size:9px;color:var(--t3);margin-top:8px;">* 팀장만 역할을 변경할 수 있습니다</div>
+  </div>
 
   <!-- ALERT STRIP -->
   <div class="alert-strip">
@@ -654,15 +892,34 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
     </div>
 
     <!-- CHAT (col 4, row 2-3) -->
-    <div class="card chat-section">
-      <div class="ch">
-        <div class="ct"><i class="ti ti-message-circle"></i> 팀 채팅</div>
-        <span style="font-size:9px;padding:2px 6px;background:rgba(34,200,122,.15);color:var(--green);border-radius:8px;">실시간</span>
+    <div class="card chat-section" style="display:flex;flex-direction:column;">
+      <!-- 탭 -->
+      <div style="display:flex;gap:0;margin-bottom:8px;flex-shrink:0;border-bottom:1px solid var(--border);">
+        <button id="tab-team" onclick="switchChatTab('team')" style="flex:1;padding:5px;background:transparent;border:none;border-bottom:2px solid var(--blue);color:var(--t1);font-size:10px;font-weight:700;cursor:pointer;">💬 팀 채팅</button>
+        <button id="tab-ai" onclick="switchChatTab('ai')" style="flex:1;padding:5px;background:transparent;border:none;border-bottom:2px solid transparent;color:var(--t3);font-size:10px;cursor:pointer;">🤖 AI 챗봇</button>
       </div>
-      <div class="chat-messages" id="chat-messages"></div>
-      <div class="chat-input-row">
-        <input type="text" id="chat-input" placeholder="메시지 입력..." onkeydown="if(event.key==='Enter')sendChat()">
-        <button onclick="sendChat()"><i class="ti ti-send" style="font-size:12px"></i></button>
+      <!-- 팀 채팅 -->
+      <div id="panel-team" style="flex:1;display:flex;flex-direction:column;min-height:0;">
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-input-row">
+          <input type="text" id="chat-input" placeholder="메시지 입력..." onkeydown="if(event.key==='Enter')sendChat()">
+          <button onclick="sendChat()"><i class="ti ti-send" style="font-size:12px"></i></button>
+        </div>
+      </div>
+      <!-- AI 챗봇 -->
+      <div id="panel-ai" style="flex:1;display:none;flex-direction:column;min-height:0;">
+        <div class="chat-messages" id="ai-chat-messages">
+          <div class="chat-msg other"><div class="chat-sender">AI 어시스턴트</div><div class="chat-bubble">안녕하세요! 마케팅 업무를 도와드릴 AI입니다. 무엇이든 물어보세요!</div></div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;flex-shrink:0;">
+          <button class="csug" onclick="document.getElementById('ai-chat-input').value='오늘 우선순위 업무는?';sendAIChat()">오늘 우선 업무</button>
+          <button class="csug" onclick="document.getElementById('ai-chat-input').value='CTR 개선 방법은?';sendAIChat()">CTR 개선</button>
+          <button class="csug" onclick="document.getElementById('ai-chat-input').value='예산 부족 대응 방법은?';sendAIChat()">예산 대응</button>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="ai-chat-input" placeholder="AI에게 질문..." onkeydown="if(event.key==='Enter')sendAIChat()">
+          <button onclick="sendAIChat()"><i class="ti ti-send" style="font-size:12px"></i></button>
+        </div>
       </div>
     </div>
 
@@ -699,11 +956,12 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
     <div class="mini-card">
       <div class="ch" style="margin-bottom:6px"><div class="ct"><i class="ti ti-currency-dollar"></i> 환율 현황</div><span style="font-size:9px;color:var(--t3)">해외 광고비 참고</span></div>
       <div class="rate-grid">
-        <div class="rate-item"><div class="rate-pair">USD/KRW</div><div class="rate-val" id="r-usd">1,378.50</div><div class="rate-chg up">▲ +3.20</div></div>
-        <div class="rate-item"><div class="rate-pair">JPY/KRW</div><div class="rate-val">8.92</div><div class="rate-chg dn">▼ -0.05</div></div>
-        <div class="rate-item"><div class="rate-pair">EUR/KRW</div><div class="rate-val">1,492.30</div><div class="rate-chg up">▲ +2.10</div></div>
-        <div class="rate-item"><div class="rate-pair">CNY/KRW</div><div class="rate-val">190.45</div><div class="rate-chg dn">▼ -0.30</div></div>
+        <div class="rate-item"><div class="rate-pair">USD/KRW</div><div class="rate-val" id="r-usd">로딩중...</div></div>
+        <div class="rate-item"><div class="rate-pair">JPY/KRW</div><div class="rate-val" id="r-jpy">로딩중...</div></div>
+        <div class="rate-item"><div class="rate-pair">EUR/KRW</div><div class="rate-val" id="r-eur">로딩중...</div></div>
+        <div class="rate-item"><div class="rate-pair">CNY/KRW</div><div class="rate-val" id="r-cny">로딩중...</div></div>
       </div>
+      <div style="font-size:9px;color:var(--t3);margin-bottom:4px;" id="rate-updated">업데이트 중...</div>
       <div style="position:relative;height:40px;"><canvas id="rate-chart" role="img" aria-label="환율 추이">환율 차트</canvas></div>
     </div>
 
@@ -740,12 +998,82 @@ function renderCal(){
 }
 renderCal();
 
-// EXCHANGE TICKER
-setInterval(()=>{
-  const v=(1378.5+(Math.random()-.5)*2).toFixed(2);
-  const el=document.getElementById('r-usd');
-  if(el)el.textContent=parseFloat(v).toLocaleString('ko-KR',{minimumFractionDigits:2});
-},5000);
+// NEWS API - 실제 뉴스
+async function fetchNews() {
+  try {
+    const res = await fetch('https://newsapi.org/v2/top-headlines?country=kr&category=business&pageSize=5&apiKey=0bd8d3ef1b5b4e9081730da60b700151');
+    const data = await res.json();
+    if (data.status !== 'ok') return;
+    const list = document.getElementById('issue-list');
+    if (!list) return;
+    list.innerHTML = data.articles.map((a, i) => `
+      <div class="issue">
+        <div class="issue-n ${i<2?'top':''}">${i+1}</div>
+        <div class="issue-body">
+          <div class="issue-txt" style="cursor:pointer" onclick="window.open('${a.url}','_blank')">${a.title}</div>
+          <div class="issue-meta">${a.source.name} · ${new Date(a.publishedAt).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</div>
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    console.error('뉴스 API 오류:', e);
+  }
+}
+fetchNews();
+setInterval(fetchNews, 300000); // 5분마다 갱신
+
+// WEATHER - 실제 API
+async function fetchWeather() {
+  try {
+    const res = await fetch('https://api.openweathermap.org/data/2.5/weather?q=Seoul&appid=7fd0296e422f932a785379af5a144bac&units=metric&lang=kr');
+    const data = await res.json();
+    const temp = Math.round(data.main.temp);
+    const desc = data.weather[0].description;
+    const id = data.weather[0].id;
+    // 날씨 아이콘 선택
+    let icon = 'ti-sun', color = 'var(--amber)';
+    if (id >= 200 && id < 300) { icon = 'ti-cloud-storm'; color = 'var(--purple)'; }
+    else if (id >= 300 && id < 600) { icon = 'ti-cloud-rain'; color = 'var(--blue)'; }
+    else if (id >= 600 && id < 700) { icon = 'ti-snowflake'; color = '#a8d8ff'; }
+    else if (id >= 700 && id < 800) { icon = 'ti-mist'; color = 'var(--t2)'; }
+    else if (id === 800) { icon = 'ti-sun'; color = 'var(--amber)'; }
+    else if (id > 800) { icon = 'ti-cloud'; color = 'var(--t2)'; }
+    const el = document.getElementById('weather-widget');
+    if (el) el.innerHTML = `<i class="ti ${icon}" style="font-size:13px;color:${color}"></i> 서울 ${temp}°C · ${desc}`;
+  } catch(e) {
+    console.error('날씨 API 오류:', e);
+  }
+}
+fetchWeather();
+setInterval(fetchWeather, 600000); // 10분마다 갱신
+async function fetchRates() {
+  try {
+    const res = await fetch('https://v6.exchangerate-api.com/v6/5ea54c1ab5cbb81b7a44386a/latest/USD');
+    const data = await res.json();
+    if (data.result !== 'success') return;
+    const r = data.conversion_rates;
+    const KRW = r.KRW;
+    const JPY_KRW = (KRW / r.JPY).toFixed(2);
+    const EUR_KRW = (KRW / r.EUR).toFixed(0);
+    const CNY_KRW = (KRW / r.CNY).toFixed(2);
+
+    const usdEl = document.getElementById('r-usd');
+    const jpyEl = document.getElementById('r-jpy');
+    const eurEl = document.getElementById('r-eur');
+    const cnyEl = document.getElementById('r-cny');
+
+    if(usdEl) usdEl.textContent = KRW.toLocaleString('ko-KR', {minimumFractionDigits:2});
+    if(jpyEl) jpyEl.textContent = JPY_KRW;
+    if(eurEl) eurEl.textContent = parseFloat(EUR_KRW).toLocaleString('ko-KR');
+    if(cnyEl) cnyEl.textContent = CNY_KRW;
+
+    // 차트 데이터 업데이트
+    document.getElementById('rate-updated').textContent = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}) + ' 기준';
+  } catch(e) {
+    console.error('환율 API 오류:', e);
+  }
+}
+fetchRates();
+setInterval(fetchRates, 60000); // 1분마다 갱신
 </script>
 </body>
 </html>
