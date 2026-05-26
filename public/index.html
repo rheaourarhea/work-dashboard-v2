@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>업무 종합 대시보드 v4</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, setDoc, getDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyASLSGf1gdYpBYzQebzmAwTGl1NDtlZQWg",
+  authDomain: "work-dashboard-c1677.firebaseapp.com",
+  projectId: "work-dashboard-c1677",
+  storageBucket: "work-dashboard-c1677.firebasestorage.app",
+  messagingSenderId: "22323893030",
+  appId: "1:22323893030:web:2203af681c18d88531a7e7"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
+
+let currentUser = null;
+let currentRole = 'member';
+
+// ── 버튼 이벤트 모듈 내부에서 등록
+document.getElementById('google-login-btn').addEventListener('click', async () => {
+  try {
+    await signInWithPopup(auth, provider);
+  } catch(e) { alert('로그인 실패: ' + e.message); }
+});
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  await signOut(auth);
+});
+
+// ── 구글 로그인
+window.googleLogin = async () => {
+  try {
+    await signInWithPopup(auth, provider);
+  } catch(e) { alert('로그인 실패: ' + e.message); }
+};
+window.googleLogout = async () => {
+  await signOut(auth);
+};
+
+// ── 인증 상태 감지
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    currentUser = user;
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'flex';
+    document.getElementById('user-name').textContent = user.displayName;
+    document.getElementById('user-avatar').textContent = user.displayName?.[0] || '?';
+    document.getElementById('user-photo').src = user.photoURL || '';
+
+    // 역할 불러오기
+    const roleDoc = await getDoc(doc(db, 'users', user.uid));
+    if (roleDoc.exists()) {
+      currentRole = roleDoc.data().role || 'member';
+    } else {
+      await setDoc(doc(db, 'users', user.uid), { name: user.displayName, email: user.email, role: 'member', createdAt: serverTimestamp() });
+      currentRole = 'member';
+    }
+    document.getElementById('role-badge').textContent = currentRole === 'manager' ? '팀장' : '팀원';
+    document.getElementById('role-badge').className = 'role-badge ' + (currentRole === 'manager' ? 'manager' : 'member');
+
+    initDashboard();
+  } else {
+    currentUser = null;
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('dashboard').style.display = 'none';
+  }
+});
+
+// ── 대시보드 초기화
+function initDashboard() {
+  initChat();
+  initTasks();
+  initPostits();
+  initAnalysis();
+  startClock();
+}
+
+// ── 실시간 채팅
+function initChat() {
+  const q = query(collection(db, 'chat'), orderBy('createdAt'));
+  onSnapshot(q, (snap) => {
+    const box = document.getElementById('chat-messages');
+    box.innerHTML = '';
+    snap.forEach(d => {
+      const data = d.data();
+      const isMine = data.uid === currentUser?.uid;
+      const div = document.createElement('div');
+      div.className = 'chat-msg ' + (isMine ? 'mine' : 'other');
+      div.innerHTML = `
+        ${!isMine ? `<div class="chat-sender">${data.name}</div>` : ''}
+        <div class="chat-bubble">${data.text}</div>
+        <div class="chat-time">${data.createdAt?.toDate ? data.createdAt.toDate().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}) : ''}</div>`;
+      box.appendChild(div);
+    });
+    box.scrollTop = box.scrollHeight;
+  });
+}
+window.sendChat = async () => {
+  const inp = document.getElementById('chat-input');
+  const text = inp.value.trim();
+  if (!text || !currentUser) return;
+  inp.value = '';
+  await addDoc(collection(db, 'chat'), {
+    text, uid: currentUser.uid, name: currentUser.displayName,
+    photo: currentUser.photoURL, createdAt: serverTimestamp()
+  });
+};
+
+// ── 업무 (Tasks)
+function initTasks() {
+  const q = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
+  onSnapshot(q, (snap) => {
+    const tasks = [];
+    snap.forEach(d => tasks.push({ id: d.id, ...d.data() }));
+    renderTasks(tasks);
+  });
+}
+function renderTasks(tasks) {
+  const list = document.getElementById('task-list');
+  if (!tasks.length) { list.innerHTML = '<div style="color:var(--t3);font-size:11px;text-align:center;padding:12px">등록된 업무가 없습니다</div>'; return; }
+  list.innerHTML = tasks.map(t => `
+    <div class="task-item ${t.done?'done':''}">
+      <div class="task-chk ${t.done?'checked':''}" onclick="toggleTask('${t.id}',${!t.done})"></div>
+      <div class="task-body">
+        <div class="task-title">${t.title}</div>
+        <div class="task-meta">
+          <span class="bdg ${t.priority}">${t.priority==='urgent'?'긴급':t.priority==='high'?'높음':'보통'}</span>
+          <span class="task-assign">${t.assignee||'미배정'}</span>
+          <span class="task-dl">D-${t.deadline}</span>
+        </div>
+      </div>
+      ${(currentRole==='manager'||t.uid===currentUser?.uid)?`<button class="task-del" onclick="deleteTask('${t.id}')"><i class="ti ti-x"></i></button>`:''}
+    </div>`).join('');
+}
+window.addTask = async () => {
+  const title = document.getElementById('task-title').value.trim();
+  const assignee = document.getElementById('task-assignee').value.trim();
+  const priority = document.getElementById('task-priority').value;
+  const deadline = parseInt(document.getElementById('task-deadline').value) || 7;
+  if (!title) return;
+  await addDoc(collection(db, 'tasks'), {
+    title, assignee, priority, deadline, done: false,
+    uid: currentUser.uid, createdAt: serverTimestamp()
+  });
+  document.getElementById('task-title').value = '';
+  document.getElementById('task-assignee').value = '';
+  document.getElementById('add-task-form').style.display = 'none';
+};
+window.toggleTask = async (id, done) => {
+  await updateDoc(doc(db, 'tasks', id), { done });
+};
+window.deleteTask = async (id) => {
+  await deleteDoc(doc(db, 'tasks', id));
+};
+
+// ── 포스트잇
+function initPostits() {
+  onSnapshot(collection(db, 'postits'), (snap) => {
+    const board = document.getElementById('postit-board');
+    board.innerHTML = '';
+    snap.forEach(d => {
+      const data = d.data();
+      const div = document.createElement('div');
+      div.className = 'postit';
+      div.style.background = data.color || '#fff9c4';
+      div.innerHTML = `
+        <div class="postit-header">
+          <span class="postit-author">${data.author}</span>
+          ${(data.uid===currentUser?.uid||currentRole==='manager')?`<button onclick="deletePostit('${d.id}')"><i class="ti ti-x"></i></button>`:''}
+        </div>
+        <div class="postit-text">${data.text}</div>
+        <div class="postit-time">${data.createdAt?.toDate?data.createdAt.toDate().toLocaleDateString('ko-KR'):''}</div>`;
+      board.appendChild(div);
+    });
+  });
+}
+window.addPostit = async () => {
+  const text = document.getElementById('postit-input').value.trim();
+  const color = document.getElementById('postit-color').value;
+  if (!text || !currentUser) return;
+  await addDoc(collection(db, 'postits'), {
+    text, color, author: currentUser.displayName,
+    uid: currentUser.uid, createdAt: serverTimestamp()
+  });
+  document.getElementById('postit-input').value = '';
+};
+window.deletePostit = async (id) => {
+  await deleteDoc(doc(db, 'postits', id));
+};
+
+// ── 결산 분석 탭
+window.currentPeriod = 'daily';
+window.switchPeriod = (period) => {
+  currentPeriod = period;
+  document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('btn-'+period).classList.add('active');
+  renderAnalysis(period);
+};
+function initAnalysis() { renderAnalysis('daily'); }
+function renderAnalysis(period) {
+  const data = getAnalysisData(period);
+  // 차트 업데이트
+  if (window.analysisChart) window.analysisChart.destroy();
+  const ctx = document.getElementById('analysis-chart').getContext('2d');
+  window.analysisChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.labels,
+      datasets: [
+        { label: '완료', data: data.done, backgroundColor: 'rgba(34,200,122,0.7)', borderRadius: 4 },
+        { label: '진행', data: data.progress, backgroundColor: 'rgba(79,126,255,0.7)', borderRadius: 4 },
+        { label: '지연', data: data.delayed, backgroundColor: 'rgba(255,77,106,0.7)', borderRadius: 4 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8a92a8', font: { size: 10 } } } },
+      scales: {
+        x: { ticks: { color: '#4a5068', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,.04)' } },
+        y: { ticks: { color: '#4a5068', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,.04)' } }
+      }
+    }
+  });
+  // 요약 카드
+  document.getElementById('analysis-summary').innerHTML = `
+    <div class="sum-card gn"><div class="sum-val">${data.totalDone}</div><div class="sum-lbl">완료</div></div>
+    <div class="sum-card bl"><div class="sum-val">${data.totalProgress}</div><div class="sum-lbl">진행</div></div>
+    <div class="sum-card rd"><div class="sum-val">${data.totalDelayed}</div><div class="sum-lbl">지연</div></div>
+    <div class="sum-card pu"><div class="sum-val">${data.rate}%</div><div class="sum-lbl">완료율</div></div>`;
+}
+function getAnalysisData(period) {
+  const sets = {
+    daily:   { labels:['월','화','수','목','금','토','일'], done:[5,7,4,8,6,2,1], progress:[3,2,4,2,3,1,0], delayed:[1,0,1,0,2,0,0] },
+    weekly:  { labels:['1주','2주','3주','4주'], done:[28,32,25,35], progress:[8,6,10,7], delayed:[3,2,4,1] },
+    monthly: { labels:['1월','2월','3월','4월','5월'], done:[95,102,88,115,72], progress:[12,8,15,10,18], delayed:[5,3,7,2,4] },
+    quarterly:{ labels:['Q1','Q2','Q3','Q4'], done:[285,289,0,0], progress:[35,28,0,0], delayed:[15,6,0,0] },
+    yearly:  { labels:['2024','2025','2026'], done:[980,1120,574], progress:[45,38,46], delayed:[32,18,10] },
+  };
+  const d = sets[period];
+  const totalDone = d.done.reduce((a,b)=>a+b,0);
+  const totalProgress = d.progress.reduce((a,b)=>a+b,0);
+  const totalDelayed = d.delayed.reduce((a,b)=>a+b,0);
+  const rate = Math.round(totalDone/(totalDone+totalProgress+totalDelayed)*100);
+  return { ...d, totalDone, totalProgress, totalDelayed, rate };
+}
+
+// ── 일일 결산 메일 발송
+window.sendDailyReport = async () => {
+  const email = currentUser?.email;
+  if (!email) return;
+  const data = getAnalysisData('daily');
+  const html = `
+    <h2>📊 일일 결산 보고서</h2>
+    <p>담당자: ${currentUser.displayName}</p>
+    <p>완료: ${data.totalDone}건 | 진행: ${data.totalProgress}건 | 지연: ${data.totalDelayed}건</p>
+    <p>완료율: ${data.rate}%</p>
+    <hr><p style="color:#888;font-size:12px">업무 종합 대시보드 자동 발송</p>`;
+  try {
+    const res = await fetch('/api/send-daily-report', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ to: email, subject: `[일일결산] ${new Date().toLocaleDateString('ko-KR')} 업무 보고`, html })
+    });
+    const result = await res.json();
+    alert(result.success ? '✅ 메일 발송 완료!' : '❌ 발송 실패: ' + result.message);
+  } catch(e) { alert('서버 연결 오류'); }
+};
+
+// ── 시계
+function startClock() {
+  function tick() {
+    const n = new Date(), d = ['일','월','화','수','목','금','토'], p = v => String(v).padStart(2,'0');
+    const el = document.getElementById('clock');
+    if (el) el.textContent = `${n.getFullYear()}.${p(n.getMonth()+1)}.${p(n.getDate())} (${d[n.getDay()]}) ${p(n.getHours())}:${p(n.getMinutes())}:${p(n.getSeconds())}`;
+  }
+  setInterval(tick, 1000); tick();
+}
+
+// ── 환율 차트
+setTimeout(() => {
+  const ctx = document.getElementById('rate-chart');
+  if (ctx) new Chart(ctx.getContext('2d'), {
+    type:'line',
+    data:{ labels:['5/20','5/21','5/22','5/23','5/24','5/25','5/26'],
+      datasets:[{data:[1362,1368,1371,1370,1374,1376,1379],borderColor:'#4f7eff',borderWidth:1.5,pointRadius:2,fill:true,backgroundColor:'rgba(79,126,255,0.08)',tension:.4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{color:'#4a5068',font:{size:8}},grid:{color:'rgba(255,255,255,.03)'}},
+              y:{ticks:{color:'#4a5068',font:{size:8}},grid:{color:'rgba(255,255,255,.03)'}}}}
+  });
+}, 500);
+
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--bg2:#161b27;--bg3:#1c2133;--bg4:#232840;
+  --border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.11);
+  --t1:#e8ecf4;--t2:#8a92a8;--t3:#4a5068;
+  --blue:#4f7eff;--green:#22c87a;--amber:#f5a623;--red:#ff4d6a;
+  --teal:#1dcfb8;--purple:#9b7cfc;
+  --r:10px;--r-sm:7px;
+}
+body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-apple-system,sans-serif;font-size:12px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+
+/* LOGIN */
+#login-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:1000;flex-direction:column;gap:20px;}
+.login-box{background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:40px;text-align:center;width:340px;}
+.login-logo{width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;color:#fff;margin:0 auto 16px;}
+.login-title{font-size:18px;font-weight:700;color:var(--t1);margin-bottom:6px;}
+.login-sub{font-size:12px;color:var(--t3);margin-bottom:28px;}
+.google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px;background:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;color:#333;cursor:pointer;transition:opacity .15s;}
+.google-btn:hover{opacity:.9;}
+.google-btn img{width:20px;height:20px;}
+
+/* DASHBOARD */
+#dashboard{display:none;flex-direction:column;height:100vh;}
+
+/* HEADER */
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;}
+.hdr-l{display:flex;align-items:center;gap:10px;}
+.logo{width:26px;height:26px;border-radius:6px;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;}
+.hdr-title{font-size:13px;font-weight:700;}
+.hdr-sub{font-size:10px;color:var(--t3);}
+.hdr-r{display:flex;align-items:center;gap:10px;}
+.hdr-clock{font-size:11px;color:var(--t2);}
+.role-badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:700;}
+.role-badge.manager{background:rgba(245,166,35,.2);color:var(--amber);}
+.role-badge.member{background:rgba(79,126,255,.2);color:var(--blue);}
+.user-info{display:flex;align-items:center;gap:6px;}
+.user-photo{width:24px;height:24px;border-radius:50%;object-fit:cover;}
+.avatar{width:24px;height:24px;border-radius:50%;background:var(--purple);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;}
+.logout-btn{font-size:10px;color:var(--t3);cursor:pointer;padding:3px 7px;border:1px solid var(--border2);border-radius:5px;}
+.logout-btn:hover{background:var(--bg4);}
+
+/* ALERT */
+.alert-strip{display:flex;align-items:center;gap:8px;padding:5px 16px;background:rgba(255,77,106,0.07);border-bottom:1px solid rgba(255,77,106,0.15);flex-shrink:0;overflow:hidden;}
+.alert-label{font-size:10px;font-weight:700;color:var(--red);white-space:nowrap;display:flex;align-items:center;gap:4px;}
+.a-dot{width:5px;height:5px;border-radius:50%;background:var(--red);animation:pulse 1.2s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.alert-items{display:flex;gap:14px;}
+.ac{font-size:10px;white-space:nowrap;}
+.ac.r{color:#ff8fa0}.ac.w{color:#f5c96a}.ac.i{color:#7fa8ff}
+
+/* GRID 16:9 */
+.grid{flex:1;display:grid;grid-template-columns:220px 1fr 1fr 200px;grid-template-rows:auto 1fr 1fr;gap:8px;padding:8px 16px;overflow:hidden;min-height:0;}
+
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px;display:flex;flex-direction:column;overflow:hidden;min-height:0;}
+.ch{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-shrink:0;}
+.ct{font-size:11px;font-weight:700;color:var(--t1);display:flex;align-items:center;gap:5px;}
+.ct i{font-size:12px;color:var(--blue);}
+.ca{font-size:10px;color:var(--t3);cursor:pointer;padding:2px 6px;border:1px solid var(--border2);border-radius:4px;}
+.ca:hover{background:var(--bg4);}
+
+/* KPI */
+.kpi-row{grid-column:1/-1;display:grid;grid-template-columns:repeat(6,1fr);gap:8px;}
+.kpi{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 10px;position:relative;}
+.kpi::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:2px 2px 0 0;}
+.kpi.bl::after{background:var(--blue)}.kpi.gn::after{background:var(--green)}.kpi.am::after{background:var(--amber)}.kpi.rd::after{background:var(--red)}.kpi.tl::after{background:var(--teal)}.kpi.pu::after{background:var(--purple)}
+.kpi-lbl{font-size:9px;color:var(--t3);margin-bottom:3px;}
+.kpi-val{font-size:18px;font-weight:800;line-height:1;}
+.kpi-val.bl{color:var(--blue)}.kpi-val.gn{color:var(--green)}.kpi-val.am{color:var(--amber)}.kpi-val.rd{color:var(--red)}.kpi-val.tl{color:var(--teal)}.kpi-val.pu{color:var(--purple)}
+.kpi-hint{font-size:9px;color:var(--t3);margin-top:2px;}
+.kpi-hint.up{color:var(--green)}.kpi-hint.dn{color:var(--red)}
+
+/* TASKS */
+.task-section{grid-column:1;grid-row:2/4;}
+.task-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;}
+.task-item{display:flex;align-items:flex-start;gap:6px;padding:6px 8px;background:var(--bg3);border-radius:var(--r-sm);border:1px solid var(--border);}
+.task-item.done{opacity:.4;}
+.task-chk{width:13px;height:13px;border-radius:3px;border:1.5px solid var(--border2);flex-shrink:0;margin-top:1px;cursor:pointer;}
+.task-chk.checked{background:var(--green);border-color:var(--green);position:relative;}
+.task-chk.checked::after{content:'✓';font-size:8px;color:#fff;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);}
+.task-body{flex:1;}
+.task-title{font-size:11px;color:var(--t1);line-height:1.3;}
+.task-item.done .task-title{text-decoration:line-through;color:var(--t3);}
+.task-meta{display:flex;gap:4px;margin-top:3px;align-items:center;flex-wrap:wrap;}
+.bdg{display:inline-flex;padding:1px 5px;border-radius:8px;font-size:9px;font-weight:700;}
+.bdg.urgent{background:rgba(255,77,106,.15);color:#ff8fa0;}
+.bdg.high{background:rgba(245,166,35,.15);color:#f5c96a;}
+.bdg.normal{background:rgba(79,126,255,.12);color:#7fa8ff;}
+.task-assign{font-size:9px;color:var(--t3);}
+.task-dl{font-size:9px;color:var(--t3);}
+.task-del{background:transparent;border:none;color:var(--t3);cursor:pointer;padding:0 2px;font-size:10px;}
+.task-del:hover{color:var(--red);}
+.add-task-btn{margin-top:6px;padding:6px;background:var(--bg3);border:1px dashed var(--border2);border-radius:var(--r-sm);color:var(--t3);font-size:10px;cursor:pointer;text-align:center;flex-shrink:0;}
+.add-task-btn:hover{border-color:var(--blue);color:var(--blue);}
+#add-task-form{display:none;flex-direction:column;gap:4px;margin-top:6px;flex-shrink:0;}
+#add-task-form input,#add-task-form select{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 7px;color:var(--t1);font-size:11px;outline:none;}
+#add-task-form input:focus,#add-task-form select:focus{border-color:var(--blue);}
+#add-task-form select option{background:var(--bg3);}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:4px;}
+.form-submit{padding:6px;background:var(--blue);border:none;border-radius:var(--r-sm);color:#fff;font-size:11px;cursor:pointer;font-weight:600;}
+
+/* CHAT */
+.chat-section{grid-column:4;grid-row:2/4;}
+.chat-messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px;margin-bottom:8px;}
+.chat-msg{display:flex;flex-direction:column;max-width:85%;}
+.chat-msg.mine{align-self:flex-end;align-items:flex-end;}
+.chat-msg.other{align-self:flex-start;}
+.chat-sender{font-size:9px;color:var(--t3);margin-bottom:2px;}
+.chat-bubble{padding:6px 9px;border-radius:8px;font-size:11px;line-height:1.4;}
+.mine .chat-bubble{background:var(--blue);color:#fff;border-bottom-right-radius:2px;}
+.other .chat-bubble{background:var(--bg3);color:var(--t1);border-bottom-left-radius:2px;}
+.chat-time{font-size:9px;color:var(--t3);margin-top:2px;}
+.chat-input-row{display:flex;gap:6px;flex-shrink:0;}
+.chat-input-row input{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 8px;color:var(--t1);font-size:11px;outline:none;}
+.chat-input-row input:focus{border-color:var(--blue);}
+.chat-input-row button{padding:0 10px;background:var(--blue);border:none;border-radius:var(--r-sm);color:#fff;cursor:pointer;}
+
+/* BRIEFING */
+.briefing-section{grid-column:2/4;grid-row:2;}
+.brief-cards{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;flex:1;}
+.brief-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:9px;display:flex;flex-direction:column;gap:4px;}
+.brief-rank{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;width:fit-content;}
+.r1{background:rgba(255,77,106,.15);color:var(--red);}
+.r2{background:rgba(245,166,35,.15);color:var(--amber);}
+.r3{background:rgba(79,126,255,.15);color:var(--blue);}
+.brief-title{font-size:11px;font-weight:600;color:var(--t1);line-height:1.35;}
+.brief-meta{font-size:9px;color:var(--t3);}
+.brief-tag{font-size:9px;padding:2px 5px;border-radius:3px;width:fit-content;}
+
+/* MID: ANALYSIS + POSTIT */
+.analysis-section{grid-column:2/3;grid-row:3;}
+.postit-section{grid-column:3/4;grid-row:3;}
+
+/* PERIOD BTNS */
+.period-btns{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;flex-shrink:0;}
+.period-btn{padding:3px 7px;border-radius:4px;border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:10px;cursor:pointer;}
+.period-btn.active{background:var(--blue);border-color:var(--blue);color:#fff;}
+.analysis-body{flex:1;display:flex;flex-direction:column;gap:6px;min-height:0;}
+.sum-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;flex-shrink:0;}
+.sum-card{background:var(--bg3);border-radius:var(--r-sm);padding:6px;text-align:center;}
+.sum-val{font-size:14px;font-weight:800;}
+.sum-lbl{font-size:9px;color:var(--t3);margin-top:1px;}
+.sum-card.gn .sum-val{color:var(--green)}.sum-card.bl .sum-val{color:var(--blue)}.sum-card.rd .sum-val{color:var(--red)}.sum-card.pu .sum-val{color:var(--purple)}
+.chart-wrap{flex:1;position:relative;min-height:0;}
+
+/* POSTIT */
+.postit-board{flex:1;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;}
+.postit{width:calc(50% - 3px);min-height:70px;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:4px;box-shadow:0 2px 6px rgba(0,0,0,.2);}
+.postit-header{display:flex;justify-content:space-between;align-items:center;}
+.postit-author{font-size:9px;color:#555;font-weight:700;}
+.postit-header button{background:transparent;border:none;cursor:pointer;color:#888;font-size:10px;}
+.postit-text{font-size:11px;color:#333;flex:1;line-height:1.4;}
+.postit-time{font-size:9px;color:#888;}
+.postit-add{display:flex;gap:5px;margin-top:6px;flex-shrink:0;}
+.postit-add textarea{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 7px;color:var(--t1);font-size:11px;outline:none;resize:none;height:32px;}
+.postit-add textarea:focus{border-color:var(--blue);}
+.postit-add input[type=color]{width:28px;height:28px;border:none;border-radius:4px;cursor:pointer;padding:0;}
+.postit-add button{padding:0 8px;background:var(--amber);border:none;border-radius:var(--r-sm);color:#fff;font-size:12px;cursor:pointer;}
+
+/* RIGHT PANEL */
+.right-panel{grid-column:4;grid-row:1;display:none;}
+
+/* BOTTOM */
+.bottom-row{display:grid;grid-template-columns:220px 130px 1fr 200px;gap:8px;padding:0 16px 8px;flex-shrink:0;}
+.mini-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;}
+
+/* KPI SIGNALS */
+.sig-list{display:flex;flex-direction:column;gap:4px;flex:1;}
+.sig{display:flex;align-items:center;gap:6px;}
+.sig-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.sig-dot.g{background:var(--green);box-shadow:0 0 4px rgba(34,200,122,.5);}
+.sig-dot.a{background:var(--amber);box-shadow:0 0 4px rgba(245,166,35,.5);}
+.sig-dot.r{background:var(--red);box-shadow:0 0 4px rgba(255,77,106,.5);}
+.sig-name{flex:1;font-size:10px;color:var(--t2);}
+.sig-v{font-size:10px;font-weight:700;}
+.sig-v.g{color:var(--green)}.sig-v.a{color:var(--amber)}.sig-v.r{color:var(--red)}
+
+/* CALENDAR */
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;}
+.cal-dh{text-align:center;font-size:8px;color:var(--t3);padding:2px 0;}
+.cal-d{text-align:center;padding:2px 1px;border-radius:3px;font-size:9px;color:var(--t2);cursor:pointer;position:relative;}
+.cal-d:hover{background:var(--bg4);}
+.cal-d.today{background:var(--blue);color:#fff;font-weight:700;}
+.cal-d.has-ev::after{content:'';position:absolute;bottom:1px;left:50%;transform:translateX(-50%);width:3px;height:3px;border-radius:50%;background:var(--amber);}
+.cal-d.om{color:var(--t3);opacity:.35;}
+
+/* EXCHANGE */
+.rate-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;}
+.rate-item{background:var(--bg3);border-radius:var(--r-sm);border:1px solid var(--border);padding:5px 7px;}
+.rate-pair{font-size:8px;color:var(--t3);margin-bottom:1px;}
+.rate-val{font-size:12px;font-weight:700;color:var(--t1);}
+.rate-chg{font-size:9px;}
+.rate-chg.up{color:var(--red)}.rate-chg.dn{color:var(--green)}
+
+/* REMINDER */
+.rem-list{display:flex;flex-direction:column;gap:3px;flex:1;}
+.rem{display:flex;gap:7px;align-items:center;padding:5px 7px;background:var(--bg3);border-radius:var(--r-sm);border:1px solid var(--border);}
+.rem-time{font-size:9px;color:var(--blue);font-weight:700;min-width:36px;}
+.rem-txt{font-size:10px;color:var(--t1);flex:1;}
+.rem-tag{font-size:9px;color:var(--t3);}
+
+/* MAIL BTN */
+.mail-btn{margin-top:6px;padding:6px;background:linear-gradient(135deg,var(--green),var(--teal));border:none;border-radius:var(--r-sm);color:#fff;font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;flex-shrink:0;}
+.mail-btn:hover{opacity:.9;}
+
+::-webkit-scrollbar{width:3px;height:3px;}
+::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px;}
+::-webkit-scrollbar-track{background:transparent;}
+</style>
+</head>
+<body>
+
+<!-- 로그인 화면 -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">W</div>
+    <div class="login-title">업무 종합 대시보드</div>
+    <div class="login-sub">마케팅팀 · 업무 현황 통합 관리 시스템</div>
+    <button class="google-btn" id="google-login-btn">
+      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
+      Google 계정으로 로그인
+    </button>
+  </div>
+</div>
+
+<!-- 대시보드 -->
+<div id="dashboard">
+
+  <!-- HEADER -->
+  <header class="hdr">
+    <div class="hdr-l">
+      <div class="logo">W</div>
+      <div>
+        <div class="hdr-title">업무 종합 대시보드</div>
+        <div class="hdr-sub">마케팅팀 · 이지수 사원</div>
+      </div>
+    </div>
+    <div class="hdr-r">
+      <div class="hdr-clock" id="clock"></div>
+      <span class="role-badge member" id="role-badge">팀원</span>
+      <div class="user-info">
+        <img class="user-photo" id="user-photo" src="" alt="">
+        <span style="font-size:11px;color:var(--t2)" id="user-name"></span>
+      </div>
+      <button class="logout-btn" id="logout-btn"><i class="ti ti-logout" style="font-size:11px"></i> 로그아웃</button>
+    </div>
+  </header>
+
+  <!-- ALERT STRIP -->
+  <div class="alert-strip">
+    <div class="alert-label"><div class="a-dot"></div> 실시간 경고</div>
+    <div class="alert-items">
+      <div class="ac r"><i class="ti ti-alert-circle" style="font-size:10px"></i> SNS 콘텐츠 최종본 D-2 긴급</div>
+      <div class="ac w"><i class="ti ti-alert-triangle" style="font-size:10px"></i> 광고 예산 소진율 94% — 잔액 부족</div>
+      <div class="ac w"><i class="ti ti-alert-triangle" style="font-size:10px"></i> 인스타 CTR 1.2% — 목표 미달</div>
+      <div class="ac i"><i class="ti ti-info-circle" style="font-size:10px"></i> 오늘 15:00 마케팅 위클리 미팅</div>
+    </div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="grid">
+
+    <!-- KPI ROW -->
+    <div class="kpi-row">
+      <div class="kpi bl"><div class="kpi-lbl">광고 노출수</div><div class="kpi-val bl">4.2만</div><div class="kpi-hint up">▲ +18%</div></div>
+      <div class="kpi gn"><div class="kpi-lbl">캠페인 전환율</div><div class="kpi-val gn">3.8%</div><div class="kpi-hint up">▲ 목표 초과</div></div>
+      <div class="kpi am"><div class="kpi-lbl">예산 소진율</div><div class="kpi-val am">94%</div><div class="kpi-hint dn">잔액 360만</div></div>
+      <div class="kpi rd"><div class="kpi-lbl">마감 임박</div><div class="kpi-val rd">4건</div><div class="kpi-hint">D-3 이내</div></div>
+      <div class="kpi tl"><div class="kpi-lbl">SNS 팔로워↑</div><div class="kpi-val tl">+823</div><div class="kpi-hint up">▲ 이번달</div></div>
+      <div class="kpi pu"><div class="kpi-lbl">콘텐츠 완료율</div><div class="kpi-val pu">68%</div><div class="kpi-hint dn">목표 85%</div></div>
+    </div>
+
+    <!-- TASK LIST (col 1, row 2-3) -->
+    <div class="card task-section">
+      <div class="ch">
+        <div class="ct"><i class="ti ti-list-check"></i> 업무 분장 · To-Do</div>
+        <span class="ca" onclick="document.getElementById('add-task-form').style.display=document.getElementById('add-task-form').style.display==='flex'?'none':'flex'">+ 추가</span>
+      </div>
+      <div class="task-list" id="task-list"><div style="color:var(--t3);font-size:11px;text-align:center;padding:12px">로딩 중...</div></div>
+      <div id="add-task-form">
+        <input type="text" id="task-title" placeholder="업무명 입력">
+        <div class="form-row">
+          <input type="text" id="task-assignee" placeholder="담당자">
+          <input type="number" id="task-deadline" placeholder="D-day" min="1" max="30">
+        </div>
+        <select id="task-priority">
+          <option value="normal">보통</option>
+          <option value="high">높음</option>
+          <option value="urgent">긴급</option>
+        </select>
+        <button class="form-submit" onclick="addTask()">업무 등록</button>
+      </div>
+    </div>
+
+    <!-- AI BRIEFING (col 2-3, row 2) -->
+    <div class="card briefing-section">
+      <div class="ch">
+        <div class="ct"><i class="ti ti-sparkles"></i> AI 데일리 브리핑 · 오늘의 Top 3</div>
+        <span style="font-size:9px;color:var(--t3)">2026.05.26 기준</span>
+      </div>
+      <div class="brief-cards">
+        <div class="brief-card">
+          <div class="brief-rank r1">우선순위 1위</div>
+          <div class="brief-title">6월 신제품 런칭 SNS 콘텐츠 최종 시안 제출</div>
+          <div class="brief-meta">담당: 이지수 · 팀장 승인 필요 · D-2</div>
+          <div class="brief-tag" style="background:rgba(255,77,106,.1);color:#ff8fa0;">긴급 — 오늘 17:00까지</div>
+        </div>
+        <div class="brief-card">
+          <div class="brief-rank r2">우선순위 2위</div>
+          <div class="brief-title">6월 광고 예산 계획서 초안 제출</div>
+          <div class="brief-meta">담당: 이지수 · 팀장 보고 D-1</div>
+          <div class="brief-tag" style="background:rgba(245,166,35,.1);color:#f5c96a;">내일 오전 마감</div>
+        </div>
+        <div class="brief-card">
+          <div class="brief-rank r3">우선순위 3위</div>
+          <div class="brief-title">협력사 A 브랜드 콜라보 제안서 검토 및 회신</div>
+          <div class="brief-meta">담당: 이지수 · 법무팀 병행 · D-5</div>
+          <div class="brief-tag" style="background:rgba(79,126,255,.1);color:#7fa8ff;">이번 주 내 처리</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANALYSIS (col 2, row 3) -->
+    <div class="card analysis-section">
+      <div class="ch">
+        <div class="ct"><i class="ti ti-chart-bar"></i> 결산 분석</div>
+        <button class="mail-btn" onclick="sendDailyReport()" style="margin:0;padding:3px 8px;font-size:9px;"><i class="ti ti-mail" style="font-size:10px"></i> 메일 발송</button>
+      </div>
+      <div class="period-btns">
+        <button class="period-btn active" id="btn-daily" onclick="switchPeriod('daily')">일일</button>
+        <button class="period-btn" id="btn-weekly" onclick="switchPeriod('weekly')">주간</button>
+        <button class="period-btn" id="btn-monthly" onclick="switchPeriod('monthly')">월간</button>
+        <button class="period-btn" id="btn-quarterly" onclick="switchPeriod('quarterly')">분기</button>
+        <button class="period-btn" id="btn-yearly" onclick="switchPeriod('yearly')">연간</button>
+      </div>
+      <div class="analysis-body">
+        <div class="sum-cards" id="analysis-summary"></div>
+        <div class="chart-wrap"><canvas id="analysis-chart" role="img" aria-label="결산 분석 차트">결산 차트</canvas></div>
+      </div>
+    </div>
+
+    <!-- POSTIT (col 3, row 3) -->
+    <div class="card postit-section">
+      <div class="ch"><div class="ct"><i class="ti ti-note"></i> 포스트잇 메모</div></div>
+      <div class="postit-board" id="postit-board"></div>
+      <div class="postit-add">
+        <textarea id="postit-input" placeholder="메모 입력..."></textarea>
+        <input type="color" id="postit-color" value="#fff9c4">
+        <button onclick="addPostit()"><i class="ti ti-plus"></i></button>
+      </div>
+    </div>
+
+    <!-- CHAT (col 4, row 2-3) -->
+    <div class="card chat-section">
+      <div class="ch">
+        <div class="ct"><i class="ti ti-message-circle"></i> 팀 채팅</div>
+        <span style="font-size:9px;padding:2px 6px;background:rgba(34,200,122,.15);color:var(--green);border-radius:8px;">실시간</span>
+      </div>
+      <div class="chat-messages" id="chat-messages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="chat-input" placeholder="메시지 입력..." onkeydown="if(event.key==='Enter')sendChat()">
+        <button onclick="sendChat()"><i class="ti ti-send" style="font-size:12px"></i></button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- BOTTOM ROW -->
+  <div class="bottom-row">
+
+    <!-- KPI 신호등 -->
+    <div class="mini-card">
+      <div class="ch" style="margin-bottom:6px"><div class="ct"><i class="ti ti-traffic-lights"></i> KPI 신호등</div></div>
+      <div class="sig-list">
+        <div class="sig"><div class="sig-dot g"></div><div class="sig-name">캠페인 전환율</div><div class="sig-v g">3.8%</div></div>
+        <div class="sig"><div class="sig-dot g"></div><div class="sig-name">광고 노출수</div><div class="sig-v g">4.2만</div></div>
+        <div class="sig"><div class="sig-dot r"></div><div class="sig-name">인스타 CTR</div><div class="sig-v r">1.2%</div></div>
+        <div class="sig"><div class="sig-dot a"></div><div class="sig-name">콘텐츠 완료율</div><div class="sig-v a">68%</div></div>
+        <div class="sig"><div class="sig-dot a"></div><div class="sig-name">예산 집행률</div><div class="sig-v a">94%</div></div>
+      </div>
+    </div>
+
+    <!-- 캘린더 -->
+    <div class="mini-card">
+      <div class="ch" style="margin-bottom:5px">
+        <div class="ct"><i class="ti ti-calendar"></i> <span id="cal-lbl">5월</span></div>
+        <div style="display:flex;gap:3px;">
+          <button onclick="chgM(-1)" style="width:16px;height:16px;border:1px solid var(--border2);background:transparent;color:var(--t2);border-radius:3px;cursor:pointer;display:flex;align-items:center;justify-content:center;"><i class="ti ti-chevron-left" style="font-size:9px"></i></button>
+          <button onclick="chgM(1)" style="width:16px;height:16px;border:1px solid var(--border2);background:transparent;color:var(--t2);border-radius:3px;cursor:pointer;display:flex;align-items:center;justify-content:center;"><i class="ti ti-chevron-right" style="font-size:9px"></i></button>
+        </div>
+      </div>
+      <div class="cal-grid" id="cal-grid"></div>
+    </div>
+
+    <!-- 환율 -->
+    <div class="mini-card">
+      <div class="ch" style="margin-bottom:6px"><div class="ct"><i class="ti ti-currency-dollar"></i> 환율 현황</div><span style="font-size:9px;color:var(--t3)">해외 광고비 참고</span></div>
+      <div class="rate-grid">
+        <div class="rate-item"><div class="rate-pair">USD/KRW</div><div class="rate-val" id="r-usd">1,378.50</div><div class="rate-chg up">▲ +3.20</div></div>
+        <div class="rate-item"><div class="rate-pair">JPY/KRW</div><div class="rate-val">8.92</div><div class="rate-chg dn">▼ -0.05</div></div>
+        <div class="rate-item"><div class="rate-pair">EUR/KRW</div><div class="rate-val">1,492.30</div><div class="rate-chg up">▲ +2.10</div></div>
+        <div class="rate-item"><div class="rate-pair">CNY/KRW</div><div class="rate-val">190.45</div><div class="rate-chg dn">▼ -0.30</div></div>
+      </div>
+      <div style="position:relative;height:40px;"><canvas id="rate-chart" role="img" aria-label="환율 추이">환율 차트</canvas></div>
+    </div>
+
+    <!-- 리마인드 -->
+    <div class="mini-card">
+      <div class="ch" style="margin-bottom:6px"><div class="ct"><i class="ti ti-bell"></i> 업무 리마인드</div></div>
+      <div class="rem-list">
+        <div class="rem"><div class="rem-time">10:00</div><div class="rem-txt">SNS 시안 팀장 중간보고</div><div class="rem-tag">오늘</div></div>
+        <div class="rem"><div class="rem-time">13:00</div><div class="rem-txt">성과 보고서 데이터 취합</div><div class="rem-tag">D-3</div></div>
+        <div class="rem"><div class="rem-time">15:00</div><div class="rem-txt">마케팅 위클리 미팅</div><div class="rem-tag">오늘</div></div>
+        <div class="rem"><div class="rem-time">17:00</div><div class="rem-txt">SNS 콘텐츠 최종 제출</div><div class="rem-tag" style="color:var(--red)">긴급</div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// CALENDAR
+let cy=2026,cm=4;
+const evts={'2026-05-26':1,'2026-05-27':1,'2026-05-28':1,'2026-05-29':1,'2026-05-31':1};
+function chgM(d){cm+=d;if(cm>11){cm=0;cy++;}if(cm<0){cm=11;cy--;}renderCal();}
+function renderCal(){
+  document.getElementById('cal-lbl').textContent=`${cy}년 ${cm+1}월`;
+  const first=new Date(cy,cm,1).getDay(),total=new Date(cy,cm+1,0).getDate(),t=new Date();
+  let h=['일','월','화','수','목','금','토'].map(x=>`<div class="cal-dh">${x}</div>`).join('');
+  for(let i=0;i<first;i++)h+=`<div class="cal-d om"></div>`;
+  for(let d=1;d<=total;d++){
+    const k=`${cy}-${String(cm+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const isT=t.getFullYear()===cy&&t.getMonth()===cm&&t.getDate()===d;
+    h+=`<div class="cal-d${isT?' today':''}${evts[k]?' has-ev':''}">${d}</div>`;
+  }
+  document.getElementById('cal-grid').innerHTML=h;
+}
+renderCal();
+
+// EXCHANGE TICKER
+setInterval(()=>{
+  const v=(1378.5+(Math.random()-.5)*2).toFixed(2);
+  const el=document.getElementById('r-usd');
+  if(el)el.textContent=parseFloat(v).toLocaleString('ko-KR',{minimumFractionDigits:2});
+},5000);
+</script>
+</body>
+</html>
