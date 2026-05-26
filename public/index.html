@@ -6,7 +6,6 @@
 <title>업무 종합 대시보드 v4</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<!-- Firebase -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
@@ -25,50 +24,29 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
-
 let currentUser = null;
 let currentRole = 'member';
-
-// ── 로그인 역할 선택
 let selectedLoginRole = 'member';
+
+// ── 역할 선택
 window.selectLoginRole = (role) => {
   selectedLoginRole = role;
-  // 버튼 스타일
-  document.getElementById('role-select-manager').classList.remove('active-role','manager-active');
-  document.getElementById('role-select-member').classList.remove('active-role');
-  if (role === 'manager') {
-    document.getElementById('role-select-manager').classList.add('active-role','manager-active');
-  } else {
-    document.getElementById('role-select-member').classList.add('active-role');
-  }
-  // 안내 텍스트
-  const display = document.getElementById('selected-role-display');
-  display.innerHTML = role === 'manager'
+  document.getElementById('role-select-manager').classList.toggle('active-role', role==='manager');
+  document.getElementById('role-select-manager').classList.toggle('manager-active', role==='manager');
+  document.getElementById('role-select-member').classList.toggle('active-role', role==='member');
+  document.getElementById('selected-role-display').innerHTML = role==='manager'
     ? '👑 <strong style="color:var(--amber)">팀장</strong> 으로 로그인합니다'
     : '👤 <strong style="color:var(--blue)">팀원</strong> 으로 로그인합니다';
 };
 
-// ── 버튼 이벤트 모듈 내부에서 등록
+// ── 버튼 이벤트
 document.getElementById('google-login-btn').addEventListener('click', async () => {
-  try {
-    await signInWithPopup(auth, provider);
-  } catch(e) { alert('로그인 실패: ' + e.message); }
+  try { await signInWithPopup(auth, provider); }
+  catch(e) { alert('로그인 실패: ' + e.message); }
 });
-document.getElementById('logout-btn').addEventListener('click', async () => {
-  await signOut(auth);
-});
+document.getElementById('logout-btn').addEventListener('click', async () => { await signOut(auth); });
 
-// ── 구글 로그인
-window.googleLogin = async () => {
-  try {
-    await signInWithPopup(auth, provider);
-  } catch(e) { alert('로그인 실패: ' + e.message); }
-};
-window.googleLogout = async () => {
-  await signOut(auth);
-};
-
-// ── 인증 상태 감지
+// ── 인증 상태
 onAuthStateChanged(auth, async (user) => {
   if (user) {
     currentUser = user;
@@ -76,12 +54,7 @@ onAuthStateChanged(auth, async (user) => {
     document.getElementById('dashboard').style.display = 'flex';
     document.getElementById('user-name').textContent = user.displayName;
     document.getElementById('user-photo').src = user.photoURL || '';
-
-    // 역할 저장 (로그인 시 선택한 역할로 덮어쓰기)
-    await setDoc(doc(db, 'users', user.uid), {
-      name: user.displayName, email: user.email,
-      role: selectedLoginRole, updatedAt: serverTimestamp()
-    }, { merge: true });
+    await setDoc(doc(db,'users',user.uid), { name:user.displayName, email:user.email, role:selectedLoginRole, updatedAt:serverTimestamp() }, { merge:true });
     currentRole = selectedLoginRole;
     applyRole();
     initDashboard();
@@ -92,117 +65,132 @@ onAuthStateChanged(auth, async (user) => {
   }
 });
 
-// ── 역할 적용
 function applyRole() {
   const badge = document.getElementById('role-badge');
-  badge.textContent = currentRole === 'manager' ? '👑 팀장' : '👤 팀원';
-  badge.className = 'role-badge ' + (currentRole === 'manager' ? 'manager' : 'member');
-
-  // 팀장 전용 UI 표시/숨김
-  document.querySelectorAll('.manager-only').forEach(el => {
-    el.style.display = currentRole === 'manager' ? '' : 'none';
-  });
-  // 팀원 전용 UI
-  document.querySelectorAll('.member-only').forEach(el => {
-    el.style.display = currentRole === 'member' ? '' : 'none';
-  });
+  badge.textContent = currentRole==='manager' ? '👑 팀장' : '👤 팀원';
+  badge.className = 'role-badge ' + (currentRole==='manager' ? 'manager' : 'member');
+  document.querySelectorAll('.manager-only').forEach(el => el.style.display = currentRole==='manager' ? '' : 'none');
 }
 
-// ── 역할 변경 (팀장만 가능)
-window.changeRole = async (uid, newRole) => {
-  if (currentRole !== 'manager') return alert('팀장만 역할을 변경할 수 있습니다.');
-  await updateDoc(doc(db, 'users', uid), { role: newRole });
-  alert(`역할이 ${newRole === 'manager' ? '팀장' : '팀원'}으로 변경되었습니다.`);
-  loadTeamMembers();
-};
-
-// ── 팀원 목록 불러오기 (팀장 전용)
-async function loadTeamMembers() {
-  if (currentRole !== 'manager') return;
-  const snap = await new Promise(resolve => {
-    const unsub = onSnapshot(collection(db, 'users'), s => { unsub(); resolve(s); });
-  });
-  const list = document.getElementById('team-member-list');
-  if (!list) return;
-  list.innerHTML = '';
-  snap.forEach(d => {
-    const data = d.data();
-    const div = document.createElement('div');
-    div.className = 'team-member-item';
-    div.innerHTML = `
-      <span class="tm-name">${data.name || data.email}</span>
-      <span class="role-badge ${data.role === 'manager' ? 'manager' : 'member'}" style="font-size:9px;">
-        ${data.role === 'manager' ? '👑 팀장' : '👤 팀원'}
-      </span>
-      ${d.id !== currentUser.uid ? `
-        <select onchange="changeRole('${d.id}', this.value)" style="background:var(--bg4);border:1px solid var(--border2);color:var(--t1);border-radius:4px;font-size:9px;padding:2px 4px;">
-          <option value="member" ${data.role==='member'?'selected':''}>팀원</option>
-          <option value="manager" ${data.role==='manager'?'selected':''}>팀장</option>
-        </select>` : '<span style="font-size:9px;color:var(--t3)">나</span>'}`;
-    list.appendChild(div);
-  });
-}
-
-// ── 대시보드 초기화
 function initDashboard() {
-  initChat();
-  initTasks();
-  initPostits();
-  initAnalysis();
   startClock();
+  fetchWeather();
+  fetchRates();
+  fetchNews();
+  initTasks();
+  initChat();
+  initPostits();
+  renderAnalysis('daily');
 }
 
-// ── 실시간 채팅
-function initChat() {
-  const q = query(collection(db, 'chat'), orderBy('createdAt'));
-  onSnapshot(q, (snap) => {
-    const box = document.getElementById('chat-messages');
-    box.innerHTML = '';
-    snap.forEach(d => {
-      const data = d.data();
-      const isMine = data.uid === currentUser?.uid;
-      const div = document.createElement('div');
-      div.className = 'chat-msg ' + (isMine ? 'mine' : 'other');
-      div.innerHTML = `
-        ${!isMine ? `<div class="chat-sender">${data.name}</div>` : ''}
-        <div class="chat-bubble">${data.text}</div>
-        <div class="chat-time">${data.createdAt?.toDate ? data.createdAt.toDate().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}) : ''}</div>`;
-      box.appendChild(div);
-    });
-    box.scrollTop = box.scrollHeight;
-  });
+// ── 날씨
+async function fetchWeather() {
+  try {
+    const res = await fetch('https://api.openweathermap.org/data/2.5/weather?q=Seoul&appid=7fd0296e422f932a785379af5a144bac&units=metric&lang=kr');
+    const data = await res.json();
+    const temp = Math.round(data.main.temp);
+    const desc = data.weather[0].description;
+    const id = data.weather[0].id;
+    let icon='ti-sun', color='var(--amber)';
+    if(id>=200&&id<300){icon='ti-cloud-storm';color='var(--purple)';}
+    else if(id>=300&&id<600){icon='ti-cloud-rain';color='var(--blue)';}
+    else if(id>=600&&id<700){icon='ti-snowflake';color='#a8d8ff';}
+    else if(id>=700&&id<800){icon='ti-mist';color='var(--t2)';}
+    else if(id>800){icon='ti-cloud';color='var(--t2)';}
+    document.getElementById('weather-widget').innerHTML = `<i class="ti ${icon}" style="font-size:13px;color:${color}"></i> 서울 ${temp}°C · ${desc}`;
+  } catch(e) {
+    document.getElementById('weather-widget').innerHTML = `<i class="ti ti-sun" style="font-size:13px;color:var(--amber)"></i> 서울 22°C`;
+  }
 }
-window.sendChat = async () => {
-  const inp = document.getElementById('chat-input');
-  const text = inp.value.trim();
-  if (!text || !currentUser) return;
-  inp.value = '';
-  await addDoc(collection(db, 'chat'), {
-    text, uid: currentUser.uid, name: currentUser.displayName,
-    photo: currentUser.photoURL, createdAt: serverTimestamp()
-  });
-};
+setInterval(fetchWeather, 600000);
 
-// ── 업무 (Tasks)
+// ── 환율
+async function fetchRates() {
+  try {
+    const res = await fetch('https://v6.exchangerate-api.com/v6/5ea54c1ab5cbb81b7a44386a/latest/USD');
+    const data = await res.json();
+    if(data.result!=='success') return;
+    const r = data.conversion_rates;
+    document.getElementById('r-usd').textContent = r.KRW.toLocaleString('ko-KR',{minimumFractionDigits:2});
+    document.getElementById('r-jpy').textContent = (r.KRW/r.JPY).toFixed(2);
+    document.getElementById('r-eur').textContent = (r.KRW/r.EUR).toLocaleString('ko-KR');
+    document.getElementById('r-cny').textContent = (r.KRW/r.CNY).toFixed(2);
+    document.getElementById('rate-updated').textContent = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})+' 기준';
+  } catch(e) {}
+}
+setInterval(fetchRates, 60000);
+
+// ── 뉴스
+async function fetchNews() {
+  const fallback = [
+    {title:'6월 마케팅 트렌드 — 숏폼 콘텐츠 광고 효율 2배 상승', source:'마케팅위크', time:'1시간 전', url:'#'},
+    {title:'MZ세대 SNS 소비 패턴 변화 — 인스타→틱톡 이동 가속', source:'디지털인사이트', time:'2시간 전', url:'#'},
+    {title:'네이버 쇼핑 광고 단가 5월 대비 12% 상승', source:'광고경제', time:'3시간 전', url:'#'},
+    {title:'브랜드 콜라보 마케팅 효과 분석 — 전환율 평균 3.2%', source:'브랜드저널', time:'4시간 전', url:'#'},
+    {title:'2026 상반기 디지털 광고 시장 규모 역대 최대 기록', source:'미디어오늘', time:'5시간 전', url:'#'},
+  ];
+  try {
+    const res = await fetch('https://newsapi.org/v2/top-headlines?country=kr&category=business&pageSize=5&apiKey=0bd8d3ef1b5b4e9081730da60b700151');
+    const data = await res.json();
+    if(data.status==='ok' && data.articles.length) {
+      renderNews(data.articles.map(a=>({title:a.title, source:a.source.name, time:new Date(a.publishedAt).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}), url:a.url})));
+    } else { renderNews(fallback); }
+  } catch(e) { renderNews(fallback); }
+}
+function renderNews(articles) {
+  const list = document.getElementById('news-list');
+  if(!list) return;
+  list.innerHTML = articles.map((a,i)=>`
+    <div class="issue">
+      <div class="issue-n ${i<2?'top':''}">${i+1}</div>
+      <div class="issue-body">
+        <div class="issue-txt" style="cursor:pointer" onclick="window.open('${a.url}','_blank')">${a.title}</div>
+        <div class="issue-meta">${a.source} · ${a.time}</div>
+      </div>
+    </div>`).join('');
+}
+setInterval(fetchNews, 300000);
+
+// ── 업무 (가상 데이터 포함)
+const defaultTasks = [
+  {title:'6월 신제품 런칭 SNS 콘텐츠 최종 시안 제출', assignee:'이지수', priority:'urgent', deadline:2, done:false},
+  {title:'인스타그램 광고 소재 A/B 테스트 결과 분석', assignee:'이지수', priority:'urgent', deadline:2, done:false},
+  {title:'5월 마케팅 성과 보고서 초안 작성', assignee:'이지수·김대리', priority:'high', deadline:3, done:false},
+  {title:'6월 광고 예산 계획서 초안 제출', assignee:'이지수', priority:'urgent', deadline:1, done:false},
+  {title:'협력사 A 브랜드 콜라보 제안서 검토', assignee:'이지수', priority:'high', deadline:5, done:false},
+  {title:'유튜브 쇼츠 6월 콘텐츠 캘린더 작성', assignee:'박인턴', priority:'high', deadline:4, done:false},
+  {title:'네이버 블로그 체험단 모집 공고 등록', assignee:'박인턴', priority:'normal', deadline:7, done:false},
+  {title:'경쟁사 5월 캠페인 벤치마킹 리포트', assignee:'김대리', priority:'normal', deadline:8, done:false},
+  {title:'인플루언서 섭외 DM 발송 (10명)', assignee:'이지수', priority:'normal', deadline:6, done:true},
+  {title:'4월 광고 비용 정산 완료', assignee:'김대리', priority:'normal', deadline:10, done:true},
+];
+
 function initTasks() {
-  const q = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
-  onSnapshot(q, (snap) => {
-    const tasks = [];
-    snap.forEach(d => tasks.push({ id: d.id, ...d.data() }));
-    renderTasks(tasks);
+  const q = query(collection(db,'tasks'), orderBy('createdAt','desc'));
+  onSnapshot(q, async (snap) => {
+    if(snap.empty) {
+      // 가상 데이터 Firestore에 삽입
+      for(const t of defaultTasks) {
+        await addDoc(collection(db,'tasks'), {...t, uid: currentUser.uid, createdAt: serverTimestamp()});
+      }
+    } else {
+      const tasks = [];
+      snap.forEach(d => tasks.push({id:d.id,...d.data()}));
+      renderTasks(tasks);
+    }
   });
 }
 function renderTasks(tasks) {
   const list = document.getElementById('task-list');
-  if (!tasks.length) { list.innerHTML = '<div style="color:var(--t3);font-size:11px;text-align:center;padding:12px">등록된 업무가 없습니다</div>'; return; }
-  list.innerHTML = tasks.map(t => `
+  if(!tasks.length){list.innerHTML='<div style="color:var(--t3);font-size:11px;text-align:center;padding:12px">등록된 업무가 없습니다</div>';return;}
+  list.innerHTML = tasks.map(t=>`
     <div class="task-item ${t.done?'done':''}">
       <div class="task-chk ${t.done?'checked':''}" onclick="toggleTask('${t.id}',${!t.done})"></div>
       <div class="task-body">
         <div class="task-title">${t.title}</div>
         <div class="task-meta">
-          <span class="bdg ${t.priority}">${t.priority==='urgent'?'긴급':t.priority==='high'?'높음':'보통'}</span>
-          <span class="task-assign">${t.assignee||'미배정'}</span>
+          <span class="bdg ${t.done?'normal':t.priority}">${t.done?'완료':t.priority==='urgent'?'긴급':t.priority==='high'?'높음':'보통'}</span>
+          <span class="task-assign">👤 ${t.assignee||'미배정'}</span>
           <span class="task-dl">D-${t.deadline}</span>
         </div>
       </div>
@@ -213,34 +201,53 @@ window.addTask = async () => {
   const title = document.getElementById('task-title').value.trim();
   const assignee = document.getElementById('task-assignee').value.trim();
   const priority = document.getElementById('task-priority').value;
-  const deadline = parseInt(document.getElementById('task-deadline').value) || 7;
-  if (!title) return;
-  await addDoc(collection(db, 'tasks'), {
-    title, assignee, priority, deadline, done: false,
-    uid: currentUser.uid, createdAt: serverTimestamp()
+  const deadline = parseInt(document.getElementById('task-deadline').value)||7;
+  if(!title) return;
+  await addDoc(collection(db,'tasks'), {title, assignee, priority, deadline, done:false, uid:currentUser.uid, createdAt:serverTimestamp()});
+  document.getElementById('task-title').value='';
+  document.getElementById('task-assignee').value='';
+  document.getElementById('add-task-form').style.display='none';
+};
+window.toggleTask = async (id,done) => { await updateDoc(doc(db,'tasks',id),{done}); };
+window.deleteTask = async (id) => { await deleteDoc(doc(db,'tasks',id)); };
+
+// ── 채팅
+function initChat() {
+  const q = query(collection(db,'chat'), orderBy('createdAt'));
+  onSnapshot(q, (snap) => {
+    const box = document.getElementById('chat-messages');
+    box.innerHTML='';
+    snap.forEach(d=>{
+      const data=d.data(), isMine=data.uid===currentUser?.uid;
+      const div=document.createElement('div');
+      div.className='chat-msg '+(isMine?'mine':'other');
+      div.innerHTML=`${!isMine?`<div class="chat-sender">${data.name}</div>`:''}
+        <div class="chat-bubble">${data.text}</div>
+        <div class="chat-time">${data.createdAt?.toDate?data.createdAt.toDate().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}):''}</div>`;
+      box.appendChild(div);
+    });
+    box.scrollTop=box.scrollHeight;
   });
-  document.getElementById('task-title').value = '';
-  document.getElementById('task-assignee').value = '';
-  document.getElementById('add-task-form').style.display = 'none';
-};
-window.toggleTask = async (id, done) => {
-  await updateDoc(doc(db, 'tasks', id), { done });
-};
-window.deleteTask = async (id) => {
-  await deleteDoc(doc(db, 'tasks', id));
+}
+window.sendChat = async () => {
+  const inp=document.getElementById('chat-input');
+  const text=inp.value.trim();
+  if(!text||!currentUser) return;
+  inp.value='';
+  await addDoc(collection(db,'chat'),{text, uid:currentUser.uid, name:currentUser.displayName, createdAt:serverTimestamp()});
 };
 
 // ── 포스트잇
 function initPostits() {
-  onSnapshot(collection(db, 'postits'), (snap) => {
-    const board = document.getElementById('postit-board');
-    board.innerHTML = '';
-    snap.forEach(d => {
-      const data = d.data();
-      const div = document.createElement('div');
-      div.className = 'postit';
-      div.style.background = data.color || '#fff9c4';
-      div.innerHTML = `
+  onSnapshot(collection(db,'postits'), (snap) => {
+    const board=document.getElementById('postit-board');
+    board.innerHTML='';
+    snap.forEach(d=>{
+      const data=d.data();
+      const div=document.createElement('div');
+      div.className='postit';
+      div.style.background=data.color||'#fff9c4';
+      div.innerHTML=`
         <div class="postit-header">
           <span class="postit-author">${data.author}</span>
           ${(data.uid===currentUser?.uid||currentRole==='manager')?`<button onclick="deletePostit('${d.id}')"><i class="ti ti-x"></i></button>`:''}
@@ -252,294 +259,185 @@ function initPostits() {
   });
 }
 window.addPostit = async () => {
-  const text = document.getElementById('postit-input').value.trim();
-  const color = document.getElementById('postit-color').value;
-  if (!text || !currentUser) return;
-  await addDoc(collection(db, 'postits'), {
-    text, color, author: currentUser.displayName,
-    uid: currentUser.uid, createdAt: serverTimestamp()
-  });
-  document.getElementById('postit-input').value = '';
+  const text=document.getElementById('postit-input').value.trim();
+  const color=document.getElementById('postit-color').value;
+  if(!text||!currentUser) return;
+  await addDoc(collection(db,'postits'),{text, color, author:currentUser.displayName, uid:currentUser.uid, createdAt:serverTimestamp()});
+  document.getElementById('postit-input').value='';
 };
-window.deletePostit = async (id) => {
-  await deleteDoc(doc(db, 'postits', id));
-};
+window.deletePostit = async (id) => { await deleteDoc(doc(db,'postits',id)); };
 
-// ── 결산 분석 (Firestore 실제 데이터)
-window.currentPeriod = 'daily';
+// ── 결산 분석 (가상 데이터)
 window.switchPeriod = (period) => {
-  currentPeriod = period;
-  document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('btn-'+period).classList.add('active');
-  loadAnalysis(period);
+  renderAnalysis(period);
 };
-
-function initAnalysis() { loadAnalysis('daily'); }
-
-async function loadAnalysis(period) {
-  // Firestore에서 tasks 데이터 가져오기
-  try {
-    const snap = await new Promise(resolve => {
-      const unsub = onSnapshot(collection(db, 'tasks'), s => { unsub(); resolve(s); });
-    });
-    const tasks = [];
-    snap.forEach(d => tasks.push(d.data()));
-
-    const now = new Date();
-    const periodData = buildPeriodData(tasks, period, now);
-    renderAnalysisChart(periodData);
-
-    // 결산 저장 (Firestore)
-    const key = `${period}_${now.toISOString().slice(0,10)}`;
-    await setDoc(doc(db, 'analysis', key), {
-      period, date: now.toISOString().slice(0,10),
-      totalDone: periodData.totalDone,
-      totalProgress: periodData.totalProgress,
-      totalDelayed: periodData.totalDelayed,
-      rate: periodData.rate,
-      updatedAt: serverTimestamp()
-    });
-  } catch(e) {
-    // Firestore 오류시 더미 데이터로 폴백
-    renderAnalysisChart(getFallbackData(period));
-  }
-}
-
-function buildPeriodData(tasks, period, now) {
-  const done = tasks.filter(t => t.done).length;
-  const progress = tasks.filter(t => !t.done && t.deadline > 0).length;
-  const delayed = tasks.filter(t => !t.done && t.deadline <= 0).length;
-  const total = done + progress + delayed || 1;
-  const rate = Math.round(done / total * 100);
-
-  // 기간별 라벨/분포 생성
+function renderAnalysis(period) {
   const sets = {
-    daily:     { labels:['월','화','수','목','금','토','일'] },
-    weekly:    { labels:['1주','2주','3주','4주'] },
-    monthly:   { labels:['1월','2월','3월','4월','5월'] },
-    quarterly: { labels:['Q1','Q2','Q3','Q4'] },
-    yearly:    { labels:['2024','2025','2026'] },
+    daily:     {labels:['월','화','수','목','금','토','일'], done:[5,7,4,8,6,2,1], progress:[3,2,4,2,3,1,0], delayed:[1,0,1,0,2,0,0]},
+    weekly:    {labels:['1주','2주','3주','4주'], done:[28,32,25,35], progress:[8,6,10,7], delayed:[3,2,4,1]},
+    monthly:   {labels:['1월','2월','3월','4월','5월'], done:[95,102,88,115,72], progress:[12,8,15,10,18], delayed:[5,3,7,2,4]},
+    quarterly: {labels:['Q1','Q2','Q3','Q4'], done:[285,289,0,0], progress:[35,28,0,0], delayed:[15,6,0,0]},
+    yearly:    {labels:['2024','2025','2026'], done:[980,1120,574], progress:[45,38,46], delayed:[32,18,10]},
   };
-  const labels = sets[period].labels;
-  const len = labels.length;
-
-  // 실제 태스크를 라벨 수에 맞게 분산
-  const doneArr = labels.map((_,i) => i === len-1 ? done : Math.floor(done/len));
-  const progressArr = labels.map((_,i) => i === len-1 ? progress : Math.floor(progress/len));
-  const delayedArr = labels.map((_,i) => i === len-1 ? delayed : Math.floor(delayed/len));
-
-  return { labels, done: doneArr, progress: progressArr, delayed: delayedArr, totalDone: done, totalProgress: progress, totalDelayed: delayed, rate };
-}
-
-function getFallbackData(period) {
-  const sets = {
-    daily:     { labels:['월','화','수','목','금','토','일'], done:[5,7,4,8,6,2,1], progress:[3,2,4,2,3,1,0], delayed:[1,0,1,0,2,0,0] },
-    weekly:    { labels:['1주','2주','3주','4주'], done:[28,32,25,35], progress:[8,6,10,7], delayed:[3,2,4,1] },
-    monthly:   { labels:['1월','2월','3월','4월','5월'], done:[95,102,88,115,72], progress:[12,8,15,10,18], delayed:[5,3,7,2,4] },
-    quarterly: { labels:['Q1','Q2','Q3','Q4'], done:[285,289,0,0], progress:[35,28,0,0], delayed:[15,6,0,0] },
-    yearly:    { labels:['2024','2025','2026'], done:[980,1120,574], progress:[45,38,46], delayed:[32,18,10] },
-  };
-  const d = sets[period];
-  const totalDone = d.done.reduce((a,b)=>a+b,0);
-  const totalProgress = d.progress.reduce((a,b)=>a+b,0);
-  const totalDelayed = d.delayed.reduce((a,b)=>a+b,0);
-  const rate = Math.round(totalDone/(totalDone+totalProgress+totalDelayed)*100);
-  return { ...d, totalDone, totalProgress, totalDelayed, rate };
-}
-
-function renderAnalysisChart(data) {
-  if (window.analysisChart) window.analysisChart.destroy();
-  const ctx = document.getElementById('analysis-chart');
-  if (!ctx) return;
-  window.analysisChart = new Chart(ctx.getContext('2d'), {
-    type: 'bar',
-    data: {
-      labels: data.labels,
-      datasets: [
-        { label: '완료', data: data.done, backgroundColor: 'rgba(34,200,122,0.7)', borderRadius: 4 },
-        { label: '진행', data: data.progress, backgroundColor: 'rgba(79,126,255,0.7)', borderRadius: 4 },
-        { label: '지연', data: data.delayed, backgroundColor: 'rgba(255,77,106,0.7)', borderRadius: 4 },
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: '#8a92a8', font: { size: 10 } } } },
-      scales: {
-        x: { ticks: { color: '#4a5068', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,.04)' } },
-        y: { ticks: { color: '#4a5068', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,.04)' } }
-      }
-    }
+  const d=sets[period];
+  const totalDone=d.done.reduce((a,b)=>a+b,0);
+  const totalProgress=d.progress.reduce((a,b)=>a+b,0);
+  const totalDelayed=d.delayed.reduce((a,b)=>a+b,0);
+  const rate=Math.round(totalDone/(totalDone+totalProgress+totalDelayed)*100);
+  if(window.analysisChart) window.analysisChart.destroy();
+  const ctx=document.getElementById('analysis-chart');
+  if(!ctx) return;
+  window.analysisChart=new Chart(ctx.getContext('2d'),{
+    type:'bar',
+    data:{labels:d.labels, datasets:[
+      {label:'완료', data:d.done, backgroundColor:'rgba(34,200,122,0.7)', borderRadius:4},
+      {label:'진행', data:d.progress, backgroundColor:'rgba(79,126,255,0.7)', borderRadius:4},
+      {label:'지연', data:d.delayed, backgroundColor:'rgba(255,77,106,0.7)', borderRadius:4},
+    ]},
+    options:{responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#8a92a8',font:{size:10}}}},
+      scales:{x:{ticks:{color:'#4a5068',font:{size:9}},grid:{color:'rgba(255,255,255,.04)'}},
+              y:{ticks:{color:'#4a5068',font:{size:9}},grid:{color:'rgba(255,255,255,.04)'}}}}
   });
-  document.getElementById('analysis-summary').innerHTML = `
-    <div class="sum-card gn"><div class="sum-val">${data.totalDone}</div><div class="sum-lbl">완료</div></div>
-    <div class="sum-card bl"><div class="sum-val">${data.totalProgress}</div><div class="sum-lbl">진행</div></div>
-    <div class="sum-card rd"><div class="sum-val">${data.totalDelayed}</div><div class="sum-lbl">지연</div></div>
-    <div class="sum-card pu"><div class="sum-val">${data.rate}%</div><div class="sum-lbl">완료율</div></div>`;
+  document.getElementById('analysis-summary').innerHTML=`
+    <div class="sum-card gn"><div class="sum-val">${totalDone}</div><div class="sum-lbl">완료</div></div>
+    <div class="sum-card bl"><div class="sum-val">${totalProgress}</div><div class="sum-lbl">진행</div></div>
+    <div class="sum-card rd"><div class="sum-val">${totalDelayed}</div><div class="sum-lbl">지연</div></div>
+    <div class="sum-card pu"><div class="sum-val">${rate}%</div><div class="sum-lbl">완료율</div></div>`;
 }
 
-// ── 일일 결산 메일 발송
-window.sendDailyReport = async () => {
-  const email = currentUser?.email;
-  if (!email) return;
-  const data = getAnalysisData('daily');
-  const html = `
-    <h2>📊 일일 결산 보고서</h2>
-    <p>담당자: ${currentUser.displayName}</p>
-    <p>완료: ${data.totalDone}건 | 진행: ${data.totalProgress}건 | 지연: ${data.totalDelayed}건</p>
-    <p>완료율: ${data.rate}%</p>
-    <hr><p style="color:#888;font-size:12px">업무 종합 대시보드 자동 발송</p>`;
-  try {
-    const res = await fetch('/api/send-daily-report', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ to: email, subject: `[일일결산] ${new Date().toLocaleDateString('ko-KR')} 업무 보고`, html })
-    });
-    const result = await res.json();
-    alert(result.success ? '✅ 메일 발송 완료!' : '❌ 발송 실패: ' + result.message);
-  } catch(e) { alert('서버 연결 오류'); }
-};
-
-// 팀 패널 토글
-window.toggleTeamPanel = () => {
-  const p = document.getElementById('team-panel');
-  const isOpen = p.style.display !== 'none';
-  p.style.display = isOpen ? 'none' : 'block';
-  if (!isOpen) loadTeamMembers();
-};
-
-// 채팅 탭 전환
+// ── AI 챗봇
 window.switchChatTab = (tab) => {
-  const isTeam = tab === 'team';
-  document.getElementById('panel-team').style.display = isTeam ? 'flex' : 'none';
-  document.getElementById('panel-ai').style.display = isTeam ? 'none' : 'flex';
-  document.getElementById('tab-team').style.borderBottomColor = isTeam ? 'var(--blue)' : 'transparent';
-  document.getElementById('tab-team').style.color = isTeam ? 'var(--t1)' : 'var(--t3)';
-  document.getElementById('tab-ai').style.borderBottomColor = isTeam ? 'transparent' : 'var(--blue)';
-  document.getElementById('tab-ai').style.color = isTeam ? 'var(--t3)' : 'var(--t1)';
+  const isTeam=tab==='team';
+  document.getElementById('panel-team').style.display=isTeam?'flex':'none';
+  document.getElementById('panel-ai').style.display=isTeam?'none':'flex';
+  document.getElementById('tab-team').style.cssText=isTeam?'border-bottom:2px solid var(--blue);color:var(--t1)':'border-bottom:2px solid transparent;color:var(--t3)';
+  document.getElementById('tab-ai').style.cssText=isTeam?'border-bottom:2px solid transparent;color:var(--t3)':'border-bottom:2px solid var(--blue);color:var(--t1)';
 };
-
-// ── AI 챗봇 (Claude API)
 window.sendAIChat = async () => {
-  const inp = document.getElementById('ai-chat-input');
-  const msg = inp.value.trim();
-  if (!msg || !currentUser) return;
-  inp.value = '';
-  appendAIMsg(msg, 'user');
-  const typ = appendAITyping();
+  const inp=document.getElementById('ai-chat-input');
+  const msg=inp.value.trim();
+  if(!msg||!currentUser) return;
+  inp.value='';
+  appendAIMsg(msg,'user');
+  const typ=appendAITyping();
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: `당신은 마케팅팀 ${currentUser.displayName}의 업무 AI 어시스턴트입니다.
-현재 대시보드 현황:
-- 긴급: SNS 콘텐츠 최종 시안 D-2, 광고예산 계획서 D-1
-- KPI: 캠페인 전환율 3.8%(목표 초과), 인스타 CTR 1.2%(목표 미달), 예산 소진율 94%
-- 오늘 일정: 10:00 콘텐츠 중간보고, 15:00 위클리 미팅, 17:00 최종 제출 마감
-짧고 실용적으로 한국어로 답변하세요.`,
-        messages: [{ role: 'user', content: msg }]
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':'','anthropic-version':'2023-06-01'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514', max_tokens:500,
+        system:`당신은 마케팅팀 ${currentUser.displayName}의 업무 AI 어시스턴트입니다. 현재: SNS콘텐츠 D-2 긴급, 광고예산 94% 소진, 인스타CTR 1.2%(목표미달), 캠페인전환율 3.8%(목표초과). 짧고 실용적으로 한국어로 답변하세요.`,
+        messages:[{role:'user',content:msg}]
       })
     });
-    const data = await res.json();
+    const data=await res.json();
     typ.remove();
-    appendAIMsg(data.content?.[0]?.text || '응답을 받지 못했습니다.', 'bot');
+    appendAIMsg(data.content?.[0]?.text||'응답을 받지 못했습니다.','bot');
   } catch(e) {
     typ.remove();
-    appendAIMsg('연결 오류가 발생했습니다.', 'bot');
+    appendAIMsg('AI 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요.','bot');
   }
 };
-function appendAIMsg(text, role) {
-  const d = document.createElement('div');
-  d.className = 'chat-msg ' + (role === 'user' ? 'mine' : 'other');
-  d.innerHTML = role === 'bot'
-    ? `<div class="chat-sender">AI 어시스턴트</div><div class="chat-bubble">${text}</div>`
-    : `<div class="chat-bubble">${text}</div>`;
-  const c = document.getElementById('ai-chat-messages');
-  if (c) { c.appendChild(d); c.scrollTop = c.scrollHeight; }
+function appendAIMsg(text,role){
+  const d=document.createElement('div');
+  d.className='chat-msg '+(role==='user'?'mine':'other');
+  d.innerHTML=role==='bot'?`<div class="chat-sender">AI 어시스턴트</div><div class="chat-bubble">${text}</div>`:`<div class="chat-bubble">${text}</div>`;
+  const c=document.getElementById('ai-chat-messages');
+  if(c){c.appendChild(d);c.scrollTop=c.scrollHeight;}
   return d;
 }
-function appendAITyping() {
-  const d = document.createElement('div');
-  d.className = 'chat-msg other';
-  d.innerHTML = `<div class="chat-bubble" style="display:flex;gap:4px;align-items:center;">
-    <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite .0s;display:inline-block"></span>
+function appendAITyping(){
+  const d=document.createElement('div');
+  d.className='chat-msg other';
+  d.innerHTML=`<div class="chat-bubble" style="display:flex;gap:4px;align-items:center;">
+    <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite;display:inline-block"></span>
     <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite .15s;display:inline-block"></span>
     <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite .3s;display:inline-block"></span>
   </div>`;
-  const c = document.getElementById('ai-chat-messages');
-  if (c) { c.appendChild(d); c.scrollTop = c.scrollHeight; }
+  const c=document.getElementById('ai-chat-messages');
+  if(c){c.appendChild(d);c.scrollTop=c.scrollHeight;}
   return d;
 }
 
-// ── 시계
-function startClock() {
-  function tick() {
-    const n = new Date(), d = ['일','월','화','수','목','금','토'], p = v => String(v).padStart(2,'0');
-    const el = document.getElementById('clock');
-    if (el) el.textContent = `${n.getFullYear()}.${p(n.getMonth()+1)}.${p(n.getDate())} (${d[n.getDay()]}) ${p(n.getHours())}:${p(n.getMinutes())}:${p(n.getSeconds())}`;
-  }
-  setInterval(tick, 1000); tick();
+// ── 팀 관리
+window.toggleTeamPanel = () => {
+  const p=document.getElementById('team-panel');
+  const isOpen=p.style.display!=='none';
+  p.style.display=isOpen?'none':'block';
+  if(!isOpen) loadTeamMembers();
+};
+window.changeRole = async (uid,newRole) => {
+  if(currentRole!=='manager') return alert('팀장만 역할을 변경할 수 있습니다.');
+  await updateDoc(doc(db,'users',uid),{role:newRole});
+  loadTeamMembers();
+};
+async function loadTeamMembers() {
+  const snap=await new Promise(resolve=>{const u=onSnapshot(collection(db,'users'),s=>{u();resolve(s);});});
+  const list=document.getElementById('team-member-list');
+  if(!list) return;
+  list.innerHTML='';
+  snap.forEach(d=>{
+    const data=d.data();
+    const div=document.createElement('div');
+    div.className='team-member-item';
+    div.innerHTML=`
+      <span class="tm-name">${data.name||data.email}</span>
+      <span class="role-badge ${data.role==='manager'?'manager':'member'}" style="font-size:9px;">${data.role==='manager'?'👑 팀장':'👤 팀원'}</span>
+      ${d.id!==currentUser.uid?`<select onchange="changeRole('${d.id}',this.value)" style="background:var(--bg4);border:1px solid var(--border2);color:var(--t1);border-radius:4px;font-size:9px;padding:2px 4px;">
+        <option value="member" ${data.role==='member'?'selected':''}>팀원</option>
+        <option value="manager" ${data.role==='manager'?'selected':''}>팀장</option>
+      </select>`:'<span style="font-size:9px;color:var(--t3)">나</span>'}`;
+    list.appendChild(div);
+  });
 }
 
-// ── 환율 차트
-setTimeout(() => {
-  const ctx = document.getElementById('rate-chart');
-  if (ctx) new Chart(ctx.getContext('2d'), {
-    type:'line',
-    data:{ labels:['5/20','5/21','5/22','5/23','5/24','5/25','5/26'],
-      datasets:[{data:[1362,1368,1371,1370,1374,1376,1379],borderColor:'#4f7eff',borderWidth:1.5,pointRadius:2,fill:true,backgroundColor:'rgba(79,126,255,0.08)',tension:.4}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
-      scales:{x:{ticks:{color:'#4a5068',font:{size:8}},grid:{color:'rgba(255,255,255,.03)'}},
-              y:{ticks:{color:'#4a5068',font:{size:8}},grid:{color:'rgba(255,255,255,.03)'}}}}
-  });
-}, 500);
-
+// ── 시계
+function startClock(){
+  function tick(){
+    const n=new Date(),d=['일','월','화','수','목','금','토'],p=v=>String(v).padStart(2,'0');
+    const el=document.getElementById('clock');
+    if(el) el.textContent=`${n.getFullYear()}.${p(n.getMonth()+1)}.${p(n.getDate())} (${d[n.getDay()]}) ${p(n.getHours())}:${p(n.getMinutes())}:${p(n.getSeconds())}`;
+  }
+  setInterval(tick,1000);tick();
+}
 </script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0d1117;--bg2:#161b27;--bg3:#1c2133;--bg4:#232840;
-  --border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.11);
-  --t1:#e8ecf4;--t2:#8a92a8;--t3:#4a5068;
-  --blue:#4f7eff;--green:#22c87a;--amber:#f5a623;--red:#ff4d6a;
-  --teal:#1dcfb8;--purple:#9b7cfc;
-  --r:10px;--r-sm:7px;
-}
+:root{--bg:#0d1117;--bg2:#161b27;--bg3:#1c2133;--bg4:#232840;--border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.11);--t1:#e8ecf4;--t2:#8a92a8;--t3:#4a5068;--blue:#4f7eff;--green:#22c87a;--amber:#f5a623;--red:#ff4d6a;--teal:#1dcfb8;--purple:#9b7cfc;--r:10px;--r-sm:7px;}
 body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-apple-system,sans-serif;font-size:12px;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
 
+/* LOGIN */
+#login-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:1000;}
+.login-box{background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:36px;text-align:center;width:340px;}
+.login-logo{width:52px;height:52px;border-radius:13px;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#fff;margin:0 auto 14px;}
+.login-title{font-size:17px;font-weight:700;margin-bottom:5px;}
+.login-sub{font-size:11px;color:var(--t3);margin-bottom:20px;}
 .role-select-btn{padding:12px 8px;background:var(--bg3);border:2px solid var(--border);border-radius:var(--r-sm);text-align:center;cursor:pointer;transition:all .15s;}
 .role-select-btn:hover{border-color:var(--border2);}
 .role-select-btn.active-role{border-color:var(--blue);background:rgba(79,126,255,.08);}
-.role-select-btn.active-role.manager-active{border-color:var(--amber);background:rgba(245,166,35,.08);}
-
-/* LOGIN */
-#login-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:1000;flex-direction:column;gap:20px;}
-.login-box{background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:40px;text-align:center;width:340px;}
-.login-logo{width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;color:#fff;margin:0 auto 16px;}
-.login-title{font-size:18px;font-weight:700;color:var(--t1);margin-bottom:6px;}
-.login-sub{font-size:12px;color:var(--t3);margin-bottom:28px;}
-.google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px;background:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;color:#333;cursor:pointer;transition:opacity .15s;}
+.role-select-btn.manager-active{border-color:var(--amber)!important;background:rgba(245,166,35,.08)!important;}
+.google-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:11px;background:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;color:#333;cursor:pointer;margin-top:14px;}
 .google-btn:hover{opacity:.9;}
-.google-btn img{width:20px;height:20px;}
-
-/* DASHBOARD */
-#dashboard{display:none;flex-direction:column;height:100vh;}
+.google-btn img{width:18px;height:18px;}
 
 /* HEADER */
+#dashboard{display:none;flex-direction:column;height:100vh;}
 .hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;}
 .hdr-l{display:flex;align-items:center;gap:10px;}
 .logo{width:26px;height:26px;border-radius:6px;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;}
 .hdr-title{font-size:13px;font-weight:700;}
 .hdr-sub{font-size:10px;color:var(--t3);}
-.hdr-r{display:flex;align-items:center;gap:10px;}
+.hdr-r{display:flex;align-items:center;gap:8px;}
 .hdr-clock{font-size:11px;color:var(--t2);}
+.hdr-weather{font-size:11px;color:var(--t2);display:flex;align-items:center;gap:4px;}
 .role-badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:700;}
 .role-badge.manager{background:rgba(245,166,35,.2);color:var(--amber);}
 .role-badge.member{background:rgba(79,126,255,.2);color:var(--blue);}
-.user-info{display:flex;align-items:center;gap:6px;}
-.user-photo{width:24px;height:24px;border-radius:50%;object-fit:cover;}
-.avatar{width:24px;height:24px;border-radius:50%;background:var(--purple);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;}
+.user-info{display:flex;align-items:center;gap:5px;}
+.user-photo{width:22px;height:22px;border-radius:50%;object-fit:cover;}
 .logout-btn{font-size:10px;color:var(--t3);cursor:pointer;padding:3px 7px;border:1px solid var(--border2);border-radius:5px;}
 .logout-btn:hover{background:var(--bg4);}
 
@@ -548,13 +446,11 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 .alert-label{font-size:10px;font-weight:700;color:var(--red);white-space:nowrap;display:flex;align-items:center;gap:4px;}
 .a-dot{width:5px;height:5px;border-radius:50%;background:var(--red);animation:pulse 1.2s infinite;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-.alert-items{display:flex;gap:14px;}
 .ac{font-size:10px;white-space:nowrap;}
 .ac.r{color:#ff8fa0}.ac.w{color:#f5c96a}.ac.i{color:#7fa8ff}
 
-/* GRID 16:9 */
+/* GRID */
 .grid{flex:1;display:grid;grid-template-columns:220px 1fr 1fr 200px;grid-template-rows:auto 1fr 1fr;gap:8px;padding:8px 16px;overflow:hidden;min-height:0;}
-
 .card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px;display:flex;flex-direction:column;overflow:hidden;min-height:0;}
 .ch{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-shrink:0;}
 .ct{font-size:11px;font-weight:700;color:var(--t1);display:flex;align-items:center;gap:5px;}
@@ -573,7 +469,7 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 .kpi-hint{font-size:9px;color:var(--t3);margin-top:2px;}
 .kpi-hint.up{color:var(--green)}.kpi-hint.dn{color:var(--red)}
 
-/* TASKS */
+/* TASK */
 .task-section{grid-column:1;grid-row:2/4;}
 .task-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;}
 .task-item{display:flex;align-items:flex-start;gap:6px;padding:6px 8px;background:var(--bg3);border-radius:var(--r-sm);border:1px solid var(--border);}
@@ -591,32 +487,14 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 .bdg.normal{background:rgba(79,126,255,.12);color:#7fa8ff;}
 .task-assign{font-size:9px;color:var(--t3);}
 .task-dl{font-size:9px;color:var(--t3);}
-.task-del{background:transparent;border:none;color:var(--t3);cursor:pointer;padding:0 2px;font-size:10px;}
+.task-del{background:transparent;border:none;color:var(--t3);cursor:pointer;padding:0 2px;}
 .task-del:hover{color:var(--red);}
-.add-task-btn{margin-top:6px;padding:6px;background:var(--bg3);border:1px dashed var(--border2);border-radius:var(--r-sm);color:var(--t3);font-size:10px;cursor:pointer;text-align:center;flex-shrink:0;}
-.add-task-btn:hover{border-color:var(--blue);color:var(--blue);}
 #add-task-form{display:none;flex-direction:column;gap:4px;margin-top:6px;flex-shrink:0;}
 #add-task-form input,#add-task-form select{background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 7px;color:var(--t1);font-size:11px;outline:none;}
 #add-task-form input:focus,#add-task-form select:focus{border-color:var(--blue);}
 #add-task-form select option{background:var(--bg3);}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:4px;}
 .form-submit{padding:6px;background:var(--blue);border:none;border-radius:var(--r-sm);color:#fff;font-size:11px;cursor:pointer;font-weight:600;}
-
-/* CHAT */
-.chat-section{grid-column:4;grid-row:2/4;}
-.chat-messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px;margin-bottom:8px;}
-.chat-msg{display:flex;flex-direction:column;max-width:85%;}
-.chat-msg.mine{align-self:flex-end;align-items:flex-end;}
-.chat-msg.other{align-self:flex-start;}
-.chat-sender{font-size:9px;color:var(--t3);margin-bottom:2px;}
-.chat-bubble{padding:6px 9px;border-radius:8px;font-size:11px;line-height:1.4;}
-.mine .chat-bubble{background:var(--blue);color:#fff;border-bottom-right-radius:2px;}
-.other .chat-bubble{background:var(--bg3);color:var(--t1);border-bottom-left-radius:2px;}
-.chat-time{font-size:9px;color:var(--t3);margin-top:2px;}
-.chat-input-row{display:flex;gap:6px;flex-shrink:0;}
-.chat-input-row input{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 8px;color:var(--t1);font-size:11px;outline:none;}
-.chat-input-row input:focus{border-color:var(--blue);}
-.chat-input-row button{padding:0 10px;background:var(--blue);border:none;border-radius:var(--r-sm);color:#fff;cursor:pointer;}
 
 /* BRIEFING */
 .briefing-section{grid-column:2/4;grid-row:2;}
@@ -630,44 +508,54 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 .brief-meta{font-size:9px;color:var(--t3);}
 .brief-tag{font-size:9px;padding:2px 5px;border-radius:3px;width:fit-content;}
 
-/* MID: ANALYSIS + POSTIT */
+/* ANALYSIS */
 .analysis-section{grid-column:2/3;grid-row:3;}
-.postit-section{grid-column:3/4;grid-row:3;}
-
-/* PERIOD BTNS */
-.period-btns{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;flex-shrink:0;}
+.period-btns{display:flex;gap:4px;margin-bottom:7px;flex-shrink:0;}
 .period-btn{padding:3px 7px;border-radius:4px;border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:10px;cursor:pointer;}
 .period-btn.active{background:var(--blue);border-color:var(--blue);color:#fff;}
-.analysis-body{flex:1;display:flex;flex-direction:column;gap:6px;min-height:0;}
-.sum-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;flex-shrink:0;}
-.sum-card{background:var(--bg3);border-radius:var(--r-sm);padding:6px;text-align:center;}
-.sum-val{font-size:14px;font-weight:800;}
-.sum-lbl{font-size:9px;color:var(--t3);margin-top:1px;}
+.sum-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;flex-shrink:0;margin-bottom:6px;}
+.sum-card{background:var(--bg3);border-radius:var(--r-sm);padding:5px;text-align:center;}
+.sum-val{font-size:13px;font-weight:800;}
+.sum-lbl{font-size:9px;color:var(--t3);}
 .sum-card.gn .sum-val{color:var(--green)}.sum-card.bl .sum-val{color:var(--blue)}.sum-card.rd .sum-val{color:var(--red)}.sum-card.pu .sum-val{color:var(--purple)}
 .chart-wrap{flex:1;position:relative;min-height:0;}
 
 /* POSTIT */
-.postit-board{flex:1;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;}
-.postit{width:calc(50% - 3px);min-height:70px;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:4px;box-shadow:0 2px 6px rgba(0,0,0,.2);}
+.postit-section{grid-column:3/4;grid-row:3;}
+.postit-board{flex:1;overflow-y:auto;display:flex;flex-wrap:wrap;gap:5px;align-content:flex-start;}
+.postit{width:calc(50% - 3px);min-height:65px;border-radius:6px;padding:7px;display:flex;flex-direction:column;gap:3px;box-shadow:0 2px 6px rgba(0,0,0,.2);}
 .postit-header{display:flex;justify-content:space-between;align-items:center;}
 .postit-author{font-size:9px;color:#555;font-weight:700;}
 .postit-header button{background:transparent;border:none;cursor:pointer;color:#888;font-size:10px;}
 .postit-text{font-size:11px;color:#333;flex:1;line-height:1.4;}
 .postit-time{font-size:9px;color:#888;}
 .postit-add{display:flex;gap:5px;margin-top:6px;flex-shrink:0;}
-.postit-add textarea{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 7px;color:var(--t1);font-size:11px;outline:none;resize:none;height:32px;}
-.postit-add textarea:focus{border-color:var(--blue);}
-.postit-add input[type=color]{width:28px;height:28px;border:none;border-radius:4px;cursor:pointer;padding:0;}
+.postit-add textarea{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 7px;color:var(--t1);font-size:11px;outline:none;resize:none;height:30px;}
+.postit-add input[type=color]{width:26px;height:26px;border:none;border-radius:4px;cursor:pointer;padding:0;}
 .postit-add button{padding:0 8px;background:var(--amber);border:none;border-radius:var(--r-sm);color:#fff;font-size:12px;cursor:pointer;}
 
-/* RIGHT PANEL */
-.right-panel{grid-column:4;grid-row:1;display:none;}
+/* CHAT */
+.chat-section{grid-column:4;grid-row:2/4;}
+.chat-tab-btn{flex:1;padding:5px;background:transparent;border:none;font-size:10px;cursor:pointer;transition:all .15s;}
+.chat-messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:5px;margin-bottom:7px;}
+.chat-msg{display:flex;flex-direction:column;max-width:88%;}
+.chat-msg.mine{align-self:flex-end;align-items:flex-end;}
+.chat-msg.other{align-self:flex-start;}
+.chat-sender{font-size:9px;color:var(--t3);margin-bottom:2px;}
+.chat-bubble{padding:6px 9px;border-radius:8px;font-size:11px;line-height:1.4;}
+.mine .chat-bubble{background:var(--blue);color:#fff;border-bottom-right-radius:2px;}
+.other .chat-bubble{background:var(--bg3);color:var(--t1);border-bottom-left-radius:2px;}
+.chat-time{font-size:9px;color:var(--t3);margin-top:1px;}
+.chat-input-row{display:flex;gap:5px;flex-shrink:0;}
+.chat-input-row input{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r-sm);padding:6px 8px;color:var(--t1);font-size:11px;outline:none;}
+.chat-input-row input:focus{border-color:var(--blue);}
+.chat-input-row button{padding:0 10px;background:var(--blue);border:none;border-radius:var(--r-sm);color:#fff;cursor:pointer;}
+.csug{padding:3px 7px;border-radius:10px;border:1px solid var(--border2);background:transparent;color:var(--t2);font-size:10px;cursor:pointer;}
+.csug:hover{background:var(--bg4);}
 
 /* BOTTOM */
 .bottom-row{display:grid;grid-template-columns:220px 130px 1fr 200px;gap:8px;padding:0 16px 8px;flex-shrink:0;}
 .mini-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:8px;display:flex;flex-direction:column;}
-
-/* KPI SIGNALS */
 .sig-list{display:flex;flex-direction:column;gap:4px;flex:1;}
 .sig{display:flex;align-items:center;gap:6px;}
 .sig-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
@@ -677,8 +565,7 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 .sig-name{flex:1;font-size:10px;color:var(--t2);}
 .sig-v{font-size:10px;font-weight:700;}
 .sig-v.g{color:var(--green)}.sig-v.a{color:var(--amber)}.sig-v.r{color:var(--red)}
-
-/* CALENDAR */
+.sig-tgt{font-size:9px;color:var(--t3);}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;}
 .cal-dh{text-align:center;font-size:8px;color:var(--t3);padding:2px 0;}
 .cal-d{text-align:center;padding:2px 1px;border-radius:3px;font-size:9px;color:var(--t2);cursor:pointer;position:relative;}
@@ -686,32 +573,27 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 .cal-d.today{background:var(--blue);color:#fff;font-weight:700;}
 .cal-d.has-ev::after{content:'';position:absolute;bottom:1px;left:50%;transform:translateX(-50%);width:3px;height:3px;border-radius:50%;background:var(--amber);}
 .cal-d.om{color:var(--t3);opacity:.35;}
-
-/* EXCHANGE */
-.rate-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;}
+.rate-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:4px;}
 .rate-item{background:var(--bg3);border-radius:var(--r-sm);border:1px solid var(--border);padding:5px 7px;}
 .rate-pair{font-size:8px;color:var(--t3);margin-bottom:1px;}
 .rate-val{font-size:12px;font-weight:700;color:var(--t1);}
-.rate-chg{font-size:9px;}
-.rate-chg.up{color:var(--red)}.rate-chg.dn{color:var(--green)}
-
-/* REMINDER */
 .rem-list{display:flex;flex-direction:column;gap:3px;flex:1;}
 .rem{display:flex;gap:7px;align-items:center;padding:5px 7px;background:var(--bg3);border-radius:var(--r-sm);border:1px solid var(--border);}
 .rem-time{font-size:9px;color:var(--blue);font-weight:700;min-width:36px;}
 .rem-txt{font-size:10px;color:var(--t1);flex:1;}
 .rem-tag{font-size:9px;color:var(--t3);}
-
-/* MAIL BTN */
-.mail-btn{margin-top:6px;padding:6px;background:linear-gradient(135deg,var(--green),var(--teal));border:none;border-radius:var(--r-sm);color:#fff;font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;flex-shrink:0;}
-.mail-btn:hover{opacity:.9;}
-
+.issue{display:flex;gap:7px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border);}
+.issue:last-child{border-bottom:none;}
+.issue-n{font-size:11px;font-weight:800;color:var(--border2);width:14px;flex-shrink:0;}
+.issue-n.top{color:var(--amber);}
+.issue-body{flex:1;}
+.issue-txt{font-size:11px;color:var(--t1);line-height:1.3;}
+.issue-meta{font-size:9px;color:var(--t3);margin-top:2px;}
 .team-member-item{display:flex;align-items:center;gap:6px;padding:5px 7px;background:var(--bg3);border-radius:var(--r-sm);}
 .tm-name{flex:1;font-size:11px;color:var(--t1);}
-
+@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-4px)}}
 ::-webkit-scrollbar{width:3px;height:3px;}
 ::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px;}
-::-webkit-scrollbar-track{background:transparent;}
 </style>
 </head>
 <body>
@@ -722,44 +604,34 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
     <div class="login-logo">W</div>
     <div class="login-title">업무 종합 대시보드</div>
     <div class="login-sub">마케팅팀 · 업무 현황 통합 관리 시스템</div>
-
-    <!-- 역할 선택 -->
-    <div style="margin-bottom:16px;">
+    <div style="margin-bottom:14px;">
       <div style="font-size:11px;color:var(--t3);margin-bottom:8px;text-align:left;">역할을 선택하고 로그인하세요</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
         <div id="role-select-manager" class="role-select-btn" onclick="selectLoginRole('manager')">
-          <div style="font-size:20px;margin-bottom:4px;">👑</div>
+          <div style="font-size:18px;margin-bottom:3px;">👑</div>
           <div style="font-size:12px;font-weight:700;color:var(--amber)">팀장</div>
-          <div style="font-size:10px;color:var(--t3);margin-top:2px;">업무 배정·관리</div>
+          <div style="font-size:10px;color:var(--t3);margin-top:1px;">업무 배정·관리</div>
         </div>
         <div id="role-select-member" class="role-select-btn active-role" onclick="selectLoginRole('member')">
-          <div style="font-size:20px;margin-bottom:4px;">👤</div>
+          <div style="font-size:18px;margin-bottom:3px;">👤</div>
           <div style="font-size:12px;font-weight:700;color:var(--blue)">팀원</div>
-          <div style="font-size:10px;color:var(--t3);margin-top:2px;">업무 확인·처리</div>
+          <div style="font-size:10px;color:var(--t3);margin-top:1px;">업무 확인·처리</div>
         </div>
       </div>
     </div>
-
-    <!-- 선택된 역할 표시 -->
-    <div id="selected-role-display" style="margin-bottom:12px;padding:8px;background:var(--bg3);border-radius:var(--r-sm);font-size:11px;color:var(--t2);text-align:center;">
+    <div id="selected-role-display" style="padding:7px;background:var(--bg3);border-radius:var(--r-sm);font-size:11px;color:var(--t2);text-align:center;margin-bottom:4px;">
       👤 <strong style="color:var(--blue)">팀원</strong> 으로 로그인합니다
     </div>
-
     <button class="google-btn" id="google-login-btn">
       <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
       Google 계정으로 로그인
     </button>
-
-    <div style="margin-top:12px;font-size:10px;color:var(--t3);">
-      * 같은 계정도 역할에 따라 다른 화면이 제공됩니다
-    </div>
+    <div style="margin-top:10px;font-size:10px;color:var(--t3);">* 같은 계정으로 역할만 바꿔 두 버전 모두 확인 가능합니다</div>
   </div>
 </div>
 
 <!-- 대시보드 -->
 <div id="dashboard">
-
-  <!-- HEADER -->
   <header class="hdr">
     <div class="hdr-l">
       <div class="logo">W</div>
@@ -770,27 +642,27 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
     </div>
     <div class="hdr-r">
       <div class="hdr-clock" id="clock"></div>
-      <span class="role-badge member" id="role-badge">팀원</span>
+      <div class="hdr-weather" id="weather-widget"><i class="ti ti-sun" style="font-size:13px;color:var(--amber)"></i> 로딩중...</div>
+      <span class="role-badge member" id="role-badge">👤 팀원</span>
       <div class="user-info">
         <img class="user-photo" id="user-photo" src="" alt="">
         <span style="font-size:11px;color:var(--t2)" id="user-name"></span>
       </div>
-      <button class="logout-btn manager-only" onclick="toggleTeamPanel()" style="display:none;"><i class="ti ti-users" style="font-size:11px"></i> 팀 관리</button>
-      <button class="logout-btn" id="logout-btn"><i class="ti ti-logout" style="font-size:11px"></i> 로그아웃</button>
+      <button class="logout-btn manager-only" onclick="toggleTeamPanel()" style="display:none;"><i class="ti ti-users" style="font-size:10px"></i> 팀 관리</button>
+      <button class="logout-btn" id="logout-btn"><i class="ti ti-logout" style="font-size:10px"></i> 로그아웃</button>
     </div>
   </header>
 
-  <!-- 팀 관리 패널 (팀장 전용) -->
-  <div id="team-panel" style="display:none;position:fixed;top:48px;right:16px;z-index:999;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:12px;min-width:220px;box-shadow:0 8px 24px rgba(0,0,0,.4);">
-    <div style="font-size:11px;font-weight:700;color:var(--t1);margin-bottom:8px;display:flex;align-items:center;gap:5px;"><i class="ti ti-users" style="color:var(--blue)"></i> 팀원 역할 관리</div>
-    <div id="team-member-list" style="display:flex;flex-direction:column;gap:6px;"></div>
-    <div style="font-size:9px;color:var(--t3);margin-top:8px;">* 팀장만 역할을 변경할 수 있습니다</div>
+  <!-- 팀 관리 패널 -->
+  <div id="team-panel" style="display:none;position:fixed;top:46px;right:16px;z-index:999;background:var(--bg2);border:1px solid var(--border2);border-radius:var(--r);padding:12px;min-width:220px;box-shadow:0 8px 24px rgba(0,0,0,.4);">
+    <div style="font-size:11px;font-weight:700;color:var(--t1);margin-bottom:8px;">👥 팀원 역할 관리</div>
+    <div id="team-member-list" style="display:flex;flex-direction:column;gap:5px;"></div>
   </div>
 
-  <!-- ALERT STRIP -->
+  <!-- ALERT -->
   <div class="alert-strip">
     <div class="alert-label"><div class="a-dot"></div> 실시간 경고</div>
-    <div class="alert-items">
+    <div style="display:flex;gap:14px;">
       <div class="ac r"><i class="ti ti-alert-circle" style="font-size:10px"></i> SNS 콘텐츠 최종본 D-2 긴급</div>
       <div class="ac w"><i class="ti ti-alert-triangle" style="font-size:10px"></i> 광고 예산 소진율 94% — 잔액 부족</div>
       <div class="ac w"><i class="ti ti-alert-triangle" style="font-size:10px"></i> 인스타 CTR 1.2% — 목표 미달</div>
@@ -798,10 +670,10 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
     </div>
   </div>
 
-  <!-- MAIN GRID -->
+  <!-- GRID -->
   <div class="grid">
 
-    <!-- KPI ROW -->
+    <!-- KPI -->
     <div class="kpi-row">
       <div class="kpi bl"><div class="kpi-lbl">광고 노출수</div><div class="kpi-val bl">4.2만</div><div class="kpi-hint up">▲ +18%</div></div>
       <div class="kpi gn"><div class="kpi-lbl">캠페인 전환율</div><div class="kpi-val gn">3.8%</div><div class="kpi-hint up">▲ 목표 초과</div></div>
@@ -811,7 +683,7 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
       <div class="kpi pu"><div class="kpi-lbl">콘텐츠 완료율</div><div class="kpi-val pu">68%</div><div class="kpi-hint dn">목표 85%</div></div>
     </div>
 
-    <!-- TASK LIST (col 1, row 2-3) -->
+    <!-- TASK -->
     <div class="card task-section">
       <div class="ch">
         <div class="ct"><i class="ti ti-list-check"></i> 업무 분장 · To-Do</div>
@@ -833,11 +705,11 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
       </div>
     </div>
 
-    <!-- AI BRIEFING (col 2-3, row 2) -->
+    <!-- BRIEFING -->
     <div class="card briefing-section">
       <div class="ch">
         <div class="ct"><i class="ti ti-sparkles"></i> AI 데일리 브리핑 · 오늘의 Top 3</div>
-        <span style="font-size:9px;color:var(--t3)">2026.05.26 기준</span>
+        <span style="font-size:9px;color:var(--t3)" id="brief-time"></span>
       </div>
       <div class="brief-cards">
         <div class="brief-card">
@@ -861,11 +733,10 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
       </div>
     </div>
 
-    <!-- ANALYSIS (col 2, row 3) -->
+    <!-- ANALYSIS -->
     <div class="card analysis-section">
       <div class="ch">
         <div class="ct"><i class="ti ti-chart-bar"></i> 결산 분석</div>
-        <button class="mail-btn" onclick="sendDailyReport()" style="margin:0;padding:3px 8px;font-size:9px;"><i class="ti ti-mail" style="font-size:10px"></i> 메일 발송</button>
       </div>
       <div class="period-btns">
         <button class="period-btn active" id="btn-daily" onclick="switchPeriod('daily')">일일</button>
@@ -874,13 +745,11 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
         <button class="period-btn" id="btn-quarterly" onclick="switchPeriod('quarterly')">분기</button>
         <button class="period-btn" id="btn-yearly" onclick="switchPeriod('yearly')">연간</button>
       </div>
-      <div class="analysis-body">
-        <div class="sum-cards" id="analysis-summary"></div>
-        <div class="chart-wrap"><canvas id="analysis-chart" role="img" aria-label="결산 분석 차트">결산 차트</canvas></div>
-      </div>
+      <div class="sum-cards" id="analysis-summary"></div>
+      <div class="chart-wrap"><canvas id="analysis-chart" role="img" aria-label="결산 분석 차트"></canvas></div>
     </div>
 
-    <!-- POSTIT (col 3, row 3) -->
+    <!-- POSTIT -->
     <div class="card postit-section">
       <div class="ch"><div class="ct"><i class="ti ti-note"></i> 포스트잇 메모</div></div>
       <div class="postit-board" id="postit-board"></div>
@@ -891,52 +760,51 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
       </div>
     </div>
 
-    <!-- CHAT (col 4, row 2-3) -->
+    <!-- CHAT -->
     <div class="card chat-section" style="display:flex;flex-direction:column;">
-      <!-- 탭 -->
-      <div style="display:flex;gap:0;margin-bottom:8px;flex-shrink:0;border-bottom:1px solid var(--border);">
-        <button id="tab-team" onclick="switchChatTab('team')" style="flex:1;padding:5px;background:transparent;border:none;border-bottom:2px solid var(--blue);color:var(--t1);font-size:10px;font-weight:700;cursor:pointer;">💬 팀 채팅</button>
-        <button id="tab-ai" onclick="switchChatTab('ai')" style="flex:1;padding:5px;background:transparent;border:none;border-bottom:2px solid transparent;color:var(--t3);font-size:10px;cursor:pointer;">🤖 AI 챗봇</button>
+      <div style="display:flex;gap:0;margin-bottom:7px;flex-shrink:0;border-bottom:1px solid var(--border);">
+        <button id="tab-team" class="chat-tab-btn" onclick="switchChatTab('team')" style="border-bottom:2px solid var(--blue);color:var(--t1);font-weight:700;">💬 팀 채팅</button>
+        <button id="tab-ai" class="chat-tab-btn" onclick="switchChatTab('ai')" style="border-bottom:2px solid transparent;color:var(--t3);">🤖 AI 챗봇</button>
       </div>
       <!-- 팀 채팅 -->
       <div id="panel-team" style="flex:1;display:flex;flex-direction:column;min-height:0;">
         <div class="chat-messages" id="chat-messages"></div>
         <div class="chat-input-row">
           <input type="text" id="chat-input" placeholder="메시지 입력..." onkeydown="if(event.key==='Enter')sendChat()">
-          <button onclick="sendChat()"><i class="ti ti-send" style="font-size:12px"></i></button>
+          <button onclick="sendChat()"><i class="ti ti-send" style="font-size:11px"></i></button>
         </div>
       </div>
       <!-- AI 챗봇 -->
       <div id="panel-ai" style="flex:1;display:none;flex-direction:column;min-height:0;">
         <div class="chat-messages" id="ai-chat-messages">
-          <div class="chat-msg other"><div class="chat-sender">AI 어시스턴트</div><div class="chat-bubble">안녕하세요! 마케팅 업무를 도와드릴 AI입니다. 무엇이든 물어보세요!</div></div>
+          <div class="chat-msg other"><div class="chat-sender">AI 어시스턴트</div><div class="chat-bubble">안녕하세요! 마케팅 업무를 도와드릴 AI입니다 😊</div></div>
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;flex-shrink:0;">
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px;flex-shrink:0;">
           <button class="csug" onclick="document.getElementById('ai-chat-input').value='오늘 우선순위 업무는?';sendAIChat()">오늘 우선 업무</button>
           <button class="csug" onclick="document.getElementById('ai-chat-input').value='CTR 개선 방법은?';sendAIChat()">CTR 개선</button>
-          <button class="csug" onclick="document.getElementById('ai-chat-input').value='예산 부족 대응 방법은?';sendAIChat()">예산 대응</button>
+          <button class="csug" onclick="document.getElementById('ai-chat-input').value='예산 부족 대응은?';sendAIChat()">예산 대응</button>
         </div>
         <div class="chat-input-row">
           <input type="text" id="ai-chat-input" placeholder="AI에게 질문..." onkeydown="if(event.key==='Enter')sendAIChat()">
-          <button onclick="sendAIChat()"><i class="ti ti-send" style="font-size:12px"></i></button>
+          <button onclick="sendAIChat()"><i class="ti ti-send" style="font-size:11px"></i></button>
         </div>
       </div>
     </div>
 
   </div>
 
-  <!-- BOTTOM ROW -->
+  <!-- BOTTOM -->
   <div class="bottom-row">
 
     <!-- KPI 신호등 -->
     <div class="mini-card">
       <div class="ch" style="margin-bottom:6px"><div class="ct"><i class="ti ti-traffic-lights"></i> KPI 신호등</div></div>
       <div class="sig-list">
-        <div class="sig"><div class="sig-dot g"></div><div class="sig-name">캠페인 전환율</div><div class="sig-v g">3.8%</div></div>
-        <div class="sig"><div class="sig-dot g"></div><div class="sig-name">광고 노출수</div><div class="sig-v g">4.2만</div></div>
-        <div class="sig"><div class="sig-dot r"></div><div class="sig-name">인스타 CTR</div><div class="sig-v r">1.2%</div></div>
-        <div class="sig"><div class="sig-dot a"></div><div class="sig-name">콘텐츠 완료율</div><div class="sig-v a">68%</div></div>
-        <div class="sig"><div class="sig-dot a"></div><div class="sig-name">예산 집행률</div><div class="sig-v a">94%</div></div>
+        <div class="sig"><div class="sig-dot g"></div><div class="sig-name">캠페인 전환율</div><div class="sig-tgt">목표 3.5%</div><div class="sig-v g">3.8%</div></div>
+        <div class="sig"><div class="sig-dot g"></div><div class="sig-name">광고 노출수</div><div class="sig-tgt">목표 3.5만</div><div class="sig-v g">4.2만</div></div>
+        <div class="sig"><div class="sig-dot r"></div><div class="sig-name">인스타 CTR</div><div class="sig-tgt">목표 2.5%</div><div class="sig-v r">1.2%</div></div>
+        <div class="sig"><div class="sig-dot a"></div><div class="sig-name">콘텐츠 완료율</div><div class="sig-tgt">목표 85%</div><div class="sig-v a">68%</div></div>
+        <div class="sig"><div class="sig-dot a"></div><div class="sig-name">예산 집행률</div><div class="sig-tgt">적정 90%</div><div class="sig-v a">94%</div></div>
       </div>
     </div>
 
@@ -954,26 +822,20 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 
     <!-- 환율 -->
     <div class="mini-card">
-      <div class="ch" style="margin-bottom:6px"><div class="ct"><i class="ti ti-currency-dollar"></i> 환율 현황</div><span style="font-size:9px;color:var(--t3)">해외 광고비 참고</span></div>
+      <div class="ch" style="margin-bottom:5px"><div class="ct"><i class="ti ti-currency-dollar"></i> 환율 현황</div><span style="font-size:9px;color:var(--t3)" id="rate-updated">로딩중...</span></div>
       <div class="rate-grid">
-        <div class="rate-item"><div class="rate-pair">USD/KRW</div><div class="rate-val" id="r-usd">로딩중...</div></div>
-        <div class="rate-item"><div class="rate-pair">JPY/KRW</div><div class="rate-val" id="r-jpy">로딩중...</div></div>
-        <div class="rate-item"><div class="rate-pair">EUR/KRW</div><div class="rate-val" id="r-eur">로딩중...</div></div>
-        <div class="rate-item"><div class="rate-pair">CNY/KRW</div><div class="rate-val" id="r-cny">로딩중...</div></div>
+        <div class="rate-item"><div class="rate-pair">USD/KRW</div><div class="rate-val" id="r-usd">...</div></div>
+        <div class="rate-item"><div class="rate-pair">JPY/KRW</div><div class="rate-val" id="r-jpy">...</div></div>
+        <div class="rate-item"><div class="rate-pair">EUR/KRW</div><div class="rate-val" id="r-eur">...</div></div>
+        <div class="rate-item"><div class="rate-pair">CNY/KRW</div><div class="rate-val" id="r-cny">...</div></div>
       </div>
-      <div style="font-size:9px;color:var(--t3);margin-bottom:4px;" id="rate-updated">업데이트 중...</div>
-      <div style="position:relative;height:40px;"><canvas id="rate-chart" role="img" aria-label="환율 추이">환율 차트</canvas></div>
+      <div style="position:relative;height:38px;margin-top:3px;"><canvas id="rate-chart" role="img" aria-label="환율 추이"></canvas></div>
     </div>
 
-    <!-- 리마인드 -->
+    <!-- 뉴스 + 리마인드 -->
     <div class="mini-card">
-      <div class="ch" style="margin-bottom:6px"><div class="ct"><i class="ti ti-bell"></i> 업무 리마인드</div></div>
-      <div class="rem-list">
-        <div class="rem"><div class="rem-time">10:00</div><div class="rem-txt">SNS 시안 팀장 중간보고</div><div class="rem-tag">오늘</div></div>
-        <div class="rem"><div class="rem-time">13:00</div><div class="rem-txt">성과 보고서 데이터 취합</div><div class="rem-tag">D-3</div></div>
-        <div class="rem"><div class="rem-time">15:00</div><div class="rem-txt">마케팅 위클리 미팅</div><div class="rem-tag">오늘</div></div>
-        <div class="rem"><div class="rem-time">17:00</div><div class="rem-txt">SNS 콘텐츠 최종 제출</div><div class="rem-tag" style="color:var(--red)">긴급</div></div>
-      </div>
+      <div class="ch" style="margin-bottom:5px"><div class="ct"><i class="ti ti-flame" style="color:var(--red)"></i> 핫이슈 뉴스</div><span style="font-size:9px;color:var(--t3)">실시간</span></div>
+      <div id="news-list" style="flex:1;overflow-y:auto;"></div>
     </div>
 
   </div>
@@ -998,82 +860,21 @@ function renderCal(){
 }
 renderCal();
 
-// NEWS API - 실제 뉴스
-async function fetchNews() {
-  try {
-    const res = await fetch('https://newsapi.org/v2/top-headlines?country=kr&category=business&pageSize=5&apiKey=0bd8d3ef1b5b4e9081730da60b700151');
-    const data = await res.json();
-    if (data.status !== 'ok') return;
-    const list = document.getElementById('issue-list');
-    if (!list) return;
-    list.innerHTML = data.articles.map((a, i) => `
-      <div class="issue">
-        <div class="issue-n ${i<2?'top':''}">${i+1}</div>
-        <div class="issue-body">
-          <div class="issue-txt" style="cursor:pointer" onclick="window.open('${a.url}','_blank')">${a.title}</div>
-          <div class="issue-meta">${a.source.name} · ${new Date(a.publishedAt).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</div>
-        </div>
-      </div>`).join('');
-  } catch(e) {
-    console.error('뉴스 API 오류:', e);
-  }
-}
-fetchNews();
-setInterval(fetchNews, 300000); // 5분마다 갱신
+// RATE CHART
+setTimeout(()=>{
+  const ctx=document.getElementById('rate-chart');
+  if(ctx) new Chart(ctx.getContext('2d'),{
+    type:'line',
+    data:{labels:['5/20','5/21','5/22','5/23','5/24','5/25','5/26'],
+      datasets:[{data:[1362,1368,1371,1370,1374,1376,1379],borderColor:'#4f7eff',borderWidth:1.5,pointRadius:2,fill:true,backgroundColor:'rgba(79,126,255,0.08)',tension:.4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{color:'#4a5068',font:{size:8}},grid:{color:'rgba(255,255,255,.03)'}},
+              y:{ticks:{color:'#4a5068',font:{size:8}},grid:{color:'rgba(255,255,255,.03)'}}}}
+  });
+},600);
 
-// WEATHER - 실제 API
-async function fetchWeather() {
-  try {
-    const res = await fetch('https://api.openweathermap.org/data/2.5/weather?q=Seoul&appid=7fd0296e422f932a785379af5a144bac&units=metric&lang=kr');
-    const data = await res.json();
-    const temp = Math.round(data.main.temp);
-    const desc = data.weather[0].description;
-    const id = data.weather[0].id;
-    // 날씨 아이콘 선택
-    let icon = 'ti-sun', color = 'var(--amber)';
-    if (id >= 200 && id < 300) { icon = 'ti-cloud-storm'; color = 'var(--purple)'; }
-    else if (id >= 300 && id < 600) { icon = 'ti-cloud-rain'; color = 'var(--blue)'; }
-    else if (id >= 600 && id < 700) { icon = 'ti-snowflake'; color = '#a8d8ff'; }
-    else if (id >= 700 && id < 800) { icon = 'ti-mist'; color = 'var(--t2)'; }
-    else if (id === 800) { icon = 'ti-sun'; color = 'var(--amber)'; }
-    else if (id > 800) { icon = 'ti-cloud'; color = 'var(--t2)'; }
-    const el = document.getElementById('weather-widget');
-    if (el) el.innerHTML = `<i class="ti ${icon}" style="font-size:13px;color:${color}"></i> 서울 ${temp}°C · ${desc}`;
-  } catch(e) {
-    console.error('날씨 API 오류:', e);
-  }
-}
-fetchWeather();
-setInterval(fetchWeather, 600000); // 10분마다 갱신
-async function fetchRates() {
-  try {
-    const res = await fetch('https://v6.exchangerate-api.com/v6/5ea54c1ab5cbb81b7a44386a/latest/USD');
-    const data = await res.json();
-    if (data.result !== 'success') return;
-    const r = data.conversion_rates;
-    const KRW = r.KRW;
-    const JPY_KRW = (KRW / r.JPY).toFixed(2);
-    const EUR_KRW = (KRW / r.EUR).toFixed(0);
-    const CNY_KRW = (KRW / r.CNY).toFixed(2);
-
-    const usdEl = document.getElementById('r-usd');
-    const jpyEl = document.getElementById('r-jpy');
-    const eurEl = document.getElementById('r-eur');
-    const cnyEl = document.getElementById('r-cny');
-
-    if(usdEl) usdEl.textContent = KRW.toLocaleString('ko-KR', {minimumFractionDigits:2});
-    if(jpyEl) jpyEl.textContent = JPY_KRW;
-    if(eurEl) eurEl.textContent = parseFloat(EUR_KRW).toLocaleString('ko-KR');
-    if(cnyEl) cnyEl.textContent = CNY_KRW;
-
-    // 차트 데이터 업데이트
-    document.getElementById('rate-updated').textContent = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}) + ' 기준';
-  } catch(e) {
-    console.error('환율 API 오류:', e);
-  }
-}
-fetchRates();
-setInterval(fetchRates, 60000); // 1분마다 갱신
+// BRIEF TIME
+document.getElementById('brief-time').textContent = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})+' 업데이트';
 </script>
 </body>
 </html>
