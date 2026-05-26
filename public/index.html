@@ -308,60 +308,6 @@ function renderAnalysis(period) {
     <div class="sum-card pu"><div class="sum-val">${rate}%</div><div class="sum-lbl">완료율</div></div>`;
 }
 
-// ── AI 챗봇
-window.switchChatTab = (tab) => {
-  const isTeam=tab==='team';
-  document.getElementById('panel-team').style.display=isTeam?'flex':'none';
-  document.getElementById('panel-ai').style.display=isTeam?'none':'flex';
-  document.getElementById('tab-team').style.cssText=isTeam?'border-bottom:2px solid var(--blue);color:var(--t1)':'border-bottom:2px solid transparent;color:var(--t3)';
-  document.getElementById('tab-ai').style.cssText=isTeam?'border-bottom:2px solid transparent;color:var(--t3)':'border-bottom:2px solid var(--blue);color:var(--t1)';
-};
-window.sendAIChat = async () => {
-  const inp=document.getElementById('ai-chat-input');
-  const msg=inp.value.trim();
-  if(!msg||!currentUser) return;
-  inp.value='';
-  appendAIMsg(msg,'user');
-  const typ=appendAITyping();
-  try {
-    const res=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':'','anthropic-version':'2023-06-01'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:500,
-        system:`당신은 마케팅팀 ${currentUser.displayName}의 업무 AI 어시스턴트입니다. 현재: SNS콘텐츠 D-2 긴급, 광고예산 94% 소진, 인스타CTR 1.2%(목표미달), 캠페인전환율 3.8%(목표초과). 짧고 실용적으로 한국어로 답변하세요.`,
-        messages:[{role:'user',content:msg}]
-      })
-    });
-    const data=await res.json();
-    typ.remove();
-    appendAIMsg(data.content?.[0]?.text||'응답을 받지 못했습니다.','bot');
-  } catch(e) {
-    typ.remove();
-    appendAIMsg('AI 응답 오류가 발생했습니다. 잠시 후 다시 시도해주세요.','bot');
-  }
-};
-function appendAIMsg(text,role){
-  const d=document.createElement('div');
-  d.className='chat-msg '+(role==='user'?'mine':'other');
-  d.innerHTML=role==='bot'?`<div class="chat-sender">AI 어시스턴트</div><div class="chat-bubble">${text}</div>`:`<div class="chat-bubble">${text}</div>`;
-  const c=document.getElementById('ai-chat-messages');
-  if(c){c.appendChild(d);c.scrollTop=c.scrollHeight;}
-  return d;
-}
-function appendAITyping(){
-  const d=document.createElement('div');
-  d.className='chat-msg other';
-  d.innerHTML=`<div class="chat-bubble" style="display:flex;gap:4px;align-items:center;">
-    <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite;display:inline-block"></span>
-    <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite .15s;display:inline-block"></span>
-    <span style="width:5px;height:5px;border-radius:50%;background:var(--t3);animation:bounce 1s infinite .3s;display:inline-block"></span>
-  </div>`;
-  const c=document.getElementById('ai-chat-messages');
-  if(c){c.appendChild(d);c.scrollTop=c.scrollHeight;}
-  return d;
-}
-
 // ── 팀 관리
 window.toggleTeamPanel = () => {
   const p=document.getElementById('team-panel');
@@ -762,32 +708,14 @@ body{background:var(--bg);color:var(--t1);font-family:'Apple SD Gothic Neo',-app
 
     <!-- CHAT -->
     <div class="card chat-section" style="display:flex;flex-direction:column;">
-      <div style="display:flex;gap:0;margin-bottom:7px;flex-shrink:0;border-bottom:1px solid var(--border);">
-        <button id="tab-team" class="chat-tab-btn" onclick="switchChatTab('team')" style="border-bottom:2px solid var(--blue);color:var(--t1);font-weight:700;">💬 팀 채팅</button>
-        <button id="tab-ai" class="chat-tab-btn" onclick="switchChatTab('ai')" style="border-bottom:2px solid transparent;color:var(--t3);">🤖 AI 챗봇</button>
+      <div class="ch">
+        <div class="ct"><i class="ti ti-message-circle"></i> 팀 채팅</div>
+        <span style="font-size:9px;padding:2px 6px;background:rgba(34,200,122,.15);color:var(--green);border-radius:8px;">실시간</span>
       </div>
-      <!-- 팀 채팅 -->
-      <div id="panel-team" style="flex:1;display:flex;flex-direction:column;min-height:0;">
-        <div class="chat-messages" id="chat-messages"></div>
-        <div class="chat-input-row">
-          <input type="text" id="chat-input" placeholder="메시지 입력..." onkeydown="if(event.key==='Enter')sendChat()">
-          <button onclick="sendChat()"><i class="ti ti-send" style="font-size:11px"></i></button>
-        </div>
-      </div>
-      <!-- AI 챗봇 -->
-      <div id="panel-ai" style="flex:1;display:none;flex-direction:column;min-height:0;">
-        <div class="chat-messages" id="ai-chat-messages">
-          <div class="chat-msg other"><div class="chat-sender">AI 어시스턴트</div><div class="chat-bubble">안녕하세요! 마케팅 업무를 도와드릴 AI입니다 😊</div></div>
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px;flex-shrink:0;">
-          <button class="csug" onclick="document.getElementById('ai-chat-input').value='오늘 우선순위 업무는?';sendAIChat()">오늘 우선 업무</button>
-          <button class="csug" onclick="document.getElementById('ai-chat-input').value='CTR 개선 방법은?';sendAIChat()">CTR 개선</button>
-          <button class="csug" onclick="document.getElementById('ai-chat-input').value='예산 부족 대응은?';sendAIChat()">예산 대응</button>
-        </div>
-        <div class="chat-input-row">
-          <input type="text" id="ai-chat-input" placeholder="AI에게 질문..." onkeydown="if(event.key==='Enter')sendAIChat()">
-          <button onclick="sendAIChat()"><i class="ti ti-send" style="font-size:11px"></i></button>
-        </div>
+      <div class="chat-messages" id="chat-messages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="chat-input" placeholder="메시지 입력..." onkeydown="if(event.key==='Enter')sendChat()">
+        <button onclick="sendChat()"><i class="ti ti-send" style="font-size:11px"></i></button>
       </div>
     </div>
 
